@@ -4,4 +4,9 @@ site/
 *.db-wal
 *.db-shm
 /katalog
+/katalog-linux-amd64
 /target/
+/.dev-server
+.env
+.env.*
+!.env.example

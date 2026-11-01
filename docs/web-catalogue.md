@@ -8,10 +8,10 @@ There's no Node, no runtime to install and no other files to ship.
 
     ./katalog serve
 
-Open http://localhost:8080. On first run, `katalog.db` is created next to you with 39 sample titles.
-Use `-addr :8080` to open it to other devices on your network, and `-db path/to/file.db` to use another database.
+Open http://localhost:4180. On first run, `katalog.db` is created next to you with 39 sample titles.
+The port comes from `PORT` (4180 by default, see PORTS.md in `streamlinedesign/template`); `-addr 127.0.0.1:4180` keeps it local, and `-db path/to/file.db` uses another database.
 
-Build it on Linux with `make` (needs Go 1.24+), or download a binary from the
+Build it on Linux with `make katalog` (needs Go 1.24+), or download a binary from the
 [Releases](https://github.com/streamlinedesign/media-catalogue/releases) page once a version is tagged:
 
     chmod +x katalog-linux-amd64 && ./katalog-linux-amd64 serve
@@ -63,7 +63,7 @@ This writes a plain folder with the page, the data and every cover image. Upload
 
 Needs Go 1.24 or newer. The SQLite driver is pure Go, so no C compiler is needed and every platform cross-compiles:
 
-    make          # ./katalog for this machine
+    make katalog  # ./katalog for this machine
     make dist     # Linux, macOS and Windows binaries in dist/
 
 ## Layout

@@ -1,0 +1,59 @@
+name: auto-pr
+
+# Every push to a claude/* or feat/* branch opens a pull request against main
+# (if one isn't open yet) and arms auto-merge: once the "ci" check passes and
+# main's rules are met, the PR squash-merges and the branch is deleted.
+# Add the label "hold" to a PR to disarm it; remove the label to re-arm.
+#
+# Needs, once per repo (make configure-repo does it):
+#   - Settings > General > "Allow auto-merge"
+#   - Settings > Actions > "Allow GitHub Actions to create and approve pull requests"
+#   - a branch protection rule on main requiring the "ci" status check
+on:
+  push:
+    branches: ['claude/**', 'feat/**']
+  pull_request:
+    types: [labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open the PR if there isn't one
+        run: |
+          branch="${GITHUB_REF#refs/heads/}"
+          n=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          if [ -z "$n" ]; then
+            title=$(git log -1 --pretty=%s)
+            body=$(git log --reverse --pretty='- %s' origin/main..HEAD 2>/dev/null || git log -1 --pretty='- %s')
+            gh pr create --base main --head "$branch" --title "$title" --body "$body"
+            n=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          fi
+          echo "pr=$n" >> "$GITHUB_ENV"
+      - name: Arm auto-merge unless held
+        run: |
+          if gh pr view "$pr" --json labels --jq '.labels[].name' | grep -qx hold; then
+            echo "held"; exit 0; fi
+          gh pr merge "$pr" --auto --squash --delete-branch
+
+  hold:
+    if: github.event_name == 'pull_request' && github.event.label.name == 'hold'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Disarm or re-arm
+        run: |
+          if [ "${{ github.event.action }}" = labeled ]; then
+            gh pr merge "${{ github.event.number }}" --disable-auto || true
+          else
+            gh pr merge "${{ github.event.number }}" --auto --squash --delete-branch || true
+          fi

@@ -15,7 +15,7 @@ The older web catalogue (Go, static page) lives on in [docs/web-catalogue.md](do
 Needs Rust 1.85 or newer and the ALSA headers: `alsa-lib` on Arch, `libasound2-dev pkg-config`
 on Debian and Ubuntu, or just `nix develop`.
 
-    cargo build --release
+    make build                         # or: cargo build --release
     ./target/release/katalogd          # scans ~/Library/Music, serves http://127.0.0.1:7300
     ./target/release/katalog status    # in another terminal
 
