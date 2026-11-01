@@ -76,7 +76,12 @@ pub fn start(state: Shared) {
             }
             info!("changes in {} folder(s), rescanning", dirs.len());
             match crate::scan_paths(&state, Some(dirs)).await {
-                Ok(_) if !state.args.no_network => crate::fetch_missing(&state).await,
+                Ok(_) if !state.args.no_network => {
+                    if let Err(e) = crate::fetch_missing(&state, crate::FetchKind::All, false).await
+                    {
+                        warn!("fetch after rescan: {e:#}");
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => warn!("rescan: {e:#}"),
             }

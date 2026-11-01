@@ -8,6 +8,7 @@
 //!   GET  /api/tracks/{id}
 //!   GET  /api/tracks/{id}/lyrics
 //!   POST /api/scan                    full rescan
+//!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
 //!   GET  /art/{id}                    image bytes
 //!   GET  /stream/{track_id}           the audio file, with Range support
 
@@ -39,6 +40,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/tracks/{id}", get(track))
         .route("/api/tracks/{id}/lyrics", get(lyrics))
         .route("/api/scan", post(scan))
+        .route("/api/fetch", post(fetch))
         .route("/art/{id}", get(art))
         .route("/stream/{id}", get(stream))
         .layer(cors)
@@ -72,6 +74,7 @@ struct Status {
     version: &'static str,
     library: String,
     scanning: bool,
+    fetching: bool,
     #[serde(flatten)]
     stats: db::Stats,
 }
@@ -82,6 +85,7 @@ async fn status(State(s): State<Shared>) -> ApiResult<Status> {
         version: env!("CARGO_PKG_VERSION"),
         library: s.music_root.display().to_string(),
         scanning: s.scanning.load(std::sync::atomic::Ordering::Relaxed),
+        fetching: s.fetching.load(std::sync::atomic::Ordering::Relaxed),
         stats,
     }))
 }
@@ -150,8 +154,41 @@ async fn scan(State(s): State<Shared>) -> ApiResult<katalog_core::ScanReport> {
         .map_err(|e| ApiError(StatusCode::CONFLICT, format!("{e:#}")))?;
     if !s.args.no_network {
         let s2 = s.clone();
-        tokio::spawn(async move { crate::fetch_missing(&s2).await });
+        tokio::spawn(async move {
+            if let Err(e) = crate::fetch_missing(&s2, crate::FetchKind::All, false).await {
+                tracing::warn!("fetch after scan: {e:#}");
+            }
+        });
     }
+    Ok(Json(report))
+}
+
+#[derive(Deserialize)]
+struct FetchQuery {
+    #[serde(default = "all")]
+    kind: crate::FetchKind,
+    #[serde(default)]
+    retry: bool,
+}
+fn all() -> crate::FetchKind {
+    crate::FetchKind::All
+}
+
+/// Runs a fetch now and answers when it is done. Failures are not remembered,
+/// so running it again (when wifi is on) picks them up.
+async fn fetch(
+    State(s): State<Shared>,
+    Query(p): Query<FetchQuery>,
+) -> ApiResult<katalog_core::fetch::FetchReport> {
+    if s.args.no_network {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "katalogd was started with --no-network".into(),
+        ));
+    }
+    let report = crate::fetch_missing(&s, p.kind, p.retry)
+        .await
+        .map_err(|e| ApiError(StatusCode::CONFLICT, format!("{e:#}")))?;
     Ok(Json(report))
 }
 

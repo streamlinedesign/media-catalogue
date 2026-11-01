@@ -23,6 +23,8 @@ Needs Rust 1.85 or newer (or `nix develop`).
     katalog album 12
     katalog lyrics 340
     katalog url 340                    # http://127.0.0.1:7300/stream/340, give it to mpv
+    katalog fetch lyrics               # look up missing lyrics now; failures are retried next time
+    katalog fetch art --retry          # also look again at albums that had nothing online
 
 The daemon keeps watching the folder: a new rip or a deleted album shows up within seconds.
 
@@ -48,6 +50,8 @@ The daemon keeps watching the folder: a new rip or a deleted album shows up with
 - Lyrics: the embedded `LYRICS` tag, then `Track.lrc` or `Track.txt` beside the file, then
   LRCLIB (synced when they have them). Fetched lyrics are written back as `.lrc` so they stay
   with your music.
+- Fetching is its own step. A lookup that fails (offline, bad answer) is simply tried again next
+  time; only a confirmed "nothing found" is remembered, and `--retry` forgets those too.
 - Unchanged files (same size and mtime) are skipped, so a rescan of a large library is a
   directory walk, not a re-read.
 
@@ -61,6 +65,7 @@ The daemon keeps watching the folder: a new rip or a deleted album shows up with
     GET  /api/tracks/{id}
     GET  /api/tracks/{id}/lyrics
     POST /api/scan
+    POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics, answers when done
     GET  /art/{id}                     image bytes, cached forever
     GET  /stream/{track_id}            the audio file, with Range support (seeking works)
 
