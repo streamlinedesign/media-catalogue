@@ -109,6 +109,8 @@ pub fn open(path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // WAL lets the player read while the scanner writes.
+    let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.execute_batch(SCHEMA)?;
     Ok(conn)
 }

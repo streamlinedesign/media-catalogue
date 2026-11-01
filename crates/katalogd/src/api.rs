@@ -11,13 +11,24 @@
 //!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
 //!   GET  /art/{id}                    image bytes
 //!   GET  /stream/{track_id}           the audio file, with Range support
+//!
+//!   GET  /api/player                  state, track, position, queue ids, format
+//!   GET  /api/player/queue            the queue as tracks, with the current index
+//!   GET  /api/player/devices          ALSA outputs to pick from
+//!   POST /api/player/play             {"tracks":[ids]} or {"album":id} or {"artist":id}, "start":n
+//!   POST /api/player/queue            same body, appended
+//!   DELETE /api/player/queue
+//!   POST /api/player/{pause|resume|toggle|stop|next|prev}
+//!   POST /api/player/seek?ms=         POST /api/player/volume?v=0.0..1.0
+//!   POST /api/player/jump?index=      DELETE /api/player/queue/{index}
 
+use crate::player::{Cmd, Status as PlayerStatus};
 use crate::Shared;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use katalog_core::db;
 use serde::{Deserialize, Serialize};
@@ -43,6 +54,23 @@ pub fn router(state: Shared) -> Router {
         .route("/api/fetch", post(fetch))
         .route("/art/{id}", get(art))
         .route("/stream/{id}", get(stream))
+        .route("/api/player", get(player_status))
+        .route("/api/player/devices", get(player_devices))
+        .route("/api/player/play", post(player_play))
+        .route(
+            "/api/player/queue",
+            get(player_queue).post(player_add).delete(player_clear),
+        )
+        .route("/api/player/queue/{index}", delete(player_remove))
+        .route("/api/player/pause", post(|s| player_cmd(s, Cmd::Pause)))
+        .route("/api/player/resume", post(|s| player_cmd(s, Cmd::Resume)))
+        .route("/api/player/toggle", post(|s| player_cmd(s, Cmd::Toggle)))
+        .route("/api/player/stop", post(|s| player_cmd(s, Cmd::Stop)))
+        .route("/api/player/next", post(|s| player_cmd(s, Cmd::Next)))
+        .route("/api/player/prev", post(|s| player_cmd(s, Cmd::Prev)))
+        .route("/api/player/seek", post(player_seek))
+        .route("/api/player/volume", post(player_volume))
+        .route("/api/player/jump", post(player_jump))
         .layer(cors)
         .with_state(state)
 }
@@ -224,4 +252,162 @@ async fn stream(
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(res.into_response())
+}
+
+// ---- player -------------------------------------------------------------
+
+async fn player_status(State(s): State<Shared>) -> Json<PlayerStatus> {
+    Json(s.player.status())
+}
+
+async fn player_devices(State(_s): State<Shared>) -> Json<Vec<crate::player::output::Device>> {
+    Json(crate::player::output::devices())
+}
+
+/// What to play: explicit track ids, or everything of an album or artist, in order.
+#[derive(Deserialize, Default)]
+struct Selection {
+    #[serde(default)]
+    tracks: Vec<i64>,
+    album: Option<i64>,
+    artist: Option<i64>,
+    #[serde(default)]
+    start: usize,
+}
+
+fn resolve(conn: &rusqlite::Connection, sel: &Selection) -> Result<Vec<i64>, ApiError> {
+    let mut ids = sel.tracks.clone();
+    if let Some(album) = sel.album {
+        ids.extend(
+            db::tracks(conn, None, Some(album), 10_000)?
+                .iter()
+                .map(|t| t.id),
+        );
+    }
+    if let Some(artist) = sel.artist {
+        for album in db::albums(conn, None, Some(artist))? {
+            ids.extend(
+                db::tracks(conn, None, Some(album.id), 10_000)?
+                    .iter()
+                    .map(|t| t.id),
+            );
+        }
+    }
+    if ids.is_empty() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "nothing to play: give tracks, an album or an artist".into(),
+        ));
+    }
+    Ok(ids)
+}
+
+async fn player_play(
+    State(s): State<Shared>,
+    body: Option<Json<Selection>>,
+) -> ApiResult<PlayerStatus> {
+    let sel = body.map(|b| b.0).unwrap_or_default();
+    let tracks = resolve(&s.db.lock(), &sel)?;
+    s.player.send(Cmd::Play {
+        tracks,
+        start: sel.start,
+    })?;
+    Ok(Json(settled(&s).await))
+}
+
+async fn player_add(
+    State(s): State<Shared>,
+    body: Option<Json<Selection>>,
+) -> ApiResult<PlayerStatus> {
+    let sel = body.map(|b| b.0).unwrap_or_default();
+    let tracks = resolve(&s.db.lock(), &sel)?;
+    s.player.send(Cmd::Add { tracks })?;
+    Ok(Json(settled(&s).await))
+}
+
+#[derive(Serialize)]
+struct Queue {
+    index: Option<usize>,
+    tracks: Vec<db::Track>,
+}
+
+async fn player_queue(State(s): State<Shared>) -> ApiResult<Queue> {
+    let st = s.player.status();
+    let conn = s.db.lock();
+    let mut tracks = Vec::with_capacity(st.queue.len());
+    for id in &st.queue {
+        if let Some(t) = db::track(&conn, *id)? {
+            tracks.push(t);
+        }
+    }
+    Ok(Json(Queue {
+        index: st.index,
+        tracks,
+    }))
+}
+
+async fn player_clear(State(s): State<Shared>) -> ApiResult<PlayerStatus> {
+    player_cmd(State(s), Cmd::Clear).await
+}
+
+async fn player_remove(
+    State(s): State<Shared>,
+    Path(index): Path<usize>,
+) -> ApiResult<PlayerStatus> {
+    player_cmd(State(s), Cmd::Remove(index)).await
+}
+
+async fn player_cmd(State(s): State<Shared>, cmd: Cmd) -> ApiResult<PlayerStatus> {
+    s.player.send(cmd)?;
+    Ok(Json(settled(&s).await))
+}
+
+#[derive(Deserialize)]
+struct SeekQuery {
+    ms: Option<u64>,
+    secs: Option<f64>,
+}
+
+async fn player_seek(
+    State(s): State<Shared>,
+    Query(q): Query<SeekQuery>,
+) -> ApiResult<PlayerStatus> {
+    let ms =
+        q.ms.or_else(|| q.secs.map(|x| (x.max(0.0) * 1000.0) as u64))
+            .ok_or(ApiError(
+                StatusCode::BAD_REQUEST,
+                "give ms= or secs=".into(),
+            ))?;
+    player_cmd(State(s), Cmd::SeekMs(ms)).await
+}
+
+#[derive(Deserialize)]
+struct VolumeQuery {
+    v: f32,
+}
+
+async fn player_volume(
+    State(s): State<Shared>,
+    Query(q): Query<VolumeQuery>,
+) -> ApiResult<PlayerStatus> {
+    player_cmd(State(s), Cmd::Volume(q.v)).await
+}
+
+#[derive(Deserialize)]
+struct JumpQuery {
+    index: usize,
+}
+
+async fn player_jump(
+    State(s): State<Shared>,
+    Query(q): Query<JumpQuery>,
+) -> ApiResult<PlayerStatus> {
+    player_cmd(State(s), Cmd::Jump(q.index)).await
+}
+
+/// The player thread picks commands up between audio blocks, so give it a
+/// moment before answering with the new status.
+async fn settled(s: &Shared) -> PlayerStatus {
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    s.player.status()
 }

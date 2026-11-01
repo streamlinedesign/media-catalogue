@@ -7,7 +7,16 @@
 //!   katalog album <id>
 //!   katalog lyrics <track id>
 //!   katalog scan
+//!   katalog fetch lyrics|art|all [--retry]
 //!   katalog url <track id>      the stream URL, for mpv or a phone
+//!
+//!   katalog play <track ids...> | --album <id> | --artist <id>
+//!   katalog add  <track ids...> | --album <id> | --artist <id>
+//!   katalog now | toggle | pause | resume | next | prev | stop
+//!   katalog seek 1:30 | 90 | +10 | -10
+//!   katalog volume 80
+//!   katalog queue | jump <n> | remove <n> | clear
+//!   katalog devices
 //!
 //! Add --json to any command for the raw answer.
 
@@ -33,9 +42,13 @@ enum Cmd {
     /// Library size, last scan, what is missing art or lyrics
     Status,
     /// Artists, optionally matching a query
-    Artists { query: Option<String> },
+    Artists {
+        query: Option<String>,
+    },
     /// Albums, optionally matching a query
-    Albums { query: Option<String> },
+    Albums {
+        query: Option<String>,
+    },
     /// Tracks matching a query
     Tracks {
         query: Option<String>,
@@ -43,9 +56,13 @@ enum Cmd {
         limit: i64,
     },
     /// One album with its tracks
-    Album { id: i64 },
+    Album {
+        id: i64,
+    },
     /// Lyrics of a track
-    Lyrics { id: i64 },
+    Lyrics {
+        id: i64,
+    },
     /// Rescan the music folder now
     Scan,
     /// Look up missing lyrics or art online, now. Failures are retried next time.
@@ -58,7 +75,64 @@ enum Cmd {
         retry: bool,
     },
     /// The stream URL of a track
-    Url { id: i64 },
+    Url {
+        id: i64,
+    },
+
+    /// Play tracks now, replacing the queue
+    Play {
+        /// Track ids
+        tracks: Vec<i64>,
+        /// A whole album
+        #[arg(long)]
+        album: Option<i64>,
+        /// Everything by an artist
+        #[arg(long)]
+        artist: Option<i64>,
+        /// Start at this position in the new queue
+        #[arg(long, default_value_t = 0)]
+        start: usize,
+    },
+    /// Add tracks to the end of the queue
+    Add {
+        tracks: Vec<i64>,
+        #[arg(long)]
+        album: Option<i64>,
+        #[arg(long)]
+        artist: Option<i64>,
+    },
+    /// What is playing, where, and the current lyric line
+    Now,
+    /// Pause or resume
+    Toggle,
+    Pause,
+    Resume,
+    Next,
+    Prev,
+    /// Stop and release the sound card
+    Stop,
+    /// Jump to a position: 1:30, 90, +10, -10
+    Seek {
+        to: String,
+    },
+    /// Volume 0 to 100. 100 leaves the samples untouched.
+    Volume {
+        percent: u8,
+    },
+    /// The queue, with the current track marked
+    Queue,
+    /// Play the n-th track of the queue (as listed by `queue`)
+    Jump {
+        n: usize,
+    },
+    /// Remove the n-th track of the queue
+    Remove {
+        n: usize,
+    },
+    /// Empty the queue and stop
+    Clear,
+    /// ALSA outputs katalogd can use with --device
+    Devices,
 }
 
 #[tokio::main]
@@ -124,6 +198,67 @@ async fn run() -> Result<()> {
             println!("{base}/stream/{id}");
             return Ok(());
         }
+        Cmd::Play {
+            tracks,
+            album,
+            artist,
+            start,
+        } => {
+            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist, "start": start});
+            post_json(&http, format!("{base}/api/player/play"), body).await?
+        }
+        Cmd::Add {
+            tracks,
+            album,
+            artist,
+        } => {
+            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist});
+            post_json(&http, format!("{base}/api/player/queue"), body).await?
+        }
+        Cmd::Now => get("/api/player".into()).await?,
+        Cmd::Toggle => post(&http, format!("{base}/api/player/toggle")).await?,
+        Cmd::Pause => post(&http, format!("{base}/api/player/pause")).await?,
+        Cmd::Resume => post(&http, format!("{base}/api/player/resume")).await?,
+        Cmd::Next => post(&http, format!("{base}/api/player/next")).await?,
+        Cmd::Prev => post(&http, format!("{base}/api/player/prev")).await?,
+        Cmd::Stop => post(&http, format!("{base}/api/player/stop")).await?,
+        Cmd::Seek { to } => {
+            let ms = if let Some(rel) = to.strip_prefix('+').or_else(|| to.strip_prefix('-')) {
+                let now = get("/api/player".into()).await?;
+                let pos = now["position_ms"].as_i64().unwrap_or(0);
+                let delta = parse_time(rel)? as i64;
+                (if to.starts_with('+') {
+                    pos + delta
+                } else {
+                    pos - delta
+                })
+                .max(0) as u64
+            } else {
+                parse_time(to)?
+            };
+            post(&http, format!("{base}/api/player/seek?ms={ms}")).await?
+        }
+        Cmd::Volume { percent } => {
+            let v = (*percent).min(100) as f32 / 100.0;
+            post(&http, format!("{base}/api/player/volume?v={v}")).await?
+        }
+        Cmd::Queue => get("/api/player/queue".into()).await?,
+        Cmd::Jump { n } => {
+            post(
+                &http,
+                format!("{base}/api/player/jump?index={}", n.saturating_sub(1)),
+            )
+            .await?
+        }
+        Cmd::Remove { n } => {
+            delete(
+                &http,
+                format!("{base}/api/player/queue/{}", n.saturating_sub(1)),
+            )
+            .await?
+        }
+        Cmd::Clear => delete(&http, format!("{base}/api/player/queue")).await?,
+        Cmd::Devices => get("/api/player/devices".into()).await?,
     };
 
     if cli.json {
@@ -184,16 +319,177 @@ async fn run() -> Result<()> {
             s(&value["art_found"]), s(&value["lyrics_found"]), s(&value["art_missing"]), s(&value["lyrics_missing"]), s(&value["failed"])
         ),
         Cmd::Url { .. } => {}
+        Cmd::Now => {
+            let lyric = current_lyric(&value, &get).await;
+            print_now(&value, lyric.as_deref());
+        }
+        Cmd::Play { .. }
+        | Cmd::Add { .. }
+        | Cmd::Toggle
+        | Cmd::Pause
+        | Cmd::Resume
+        | Cmd::Next
+        | Cmd::Prev
+        | Cmd::Stop
+        | Cmd::Seek { .. }
+        | Cmd::Volume { .. }
+        | Cmd::Jump { .. }
+        | Cmd::Remove { .. }
+        | Cmd::Clear => print_now(&value, None),
+        Cmd::Queue => {
+            let index = value["index"].as_u64();
+            let Some(rows) = value["tracks"].as_array() else { return Ok(()) };
+            for (i, t) in rows.iter().enumerate() {
+                let mark = if Some(i as u64) == index { "▶" } else { " " };
+                println!(
+                    "{mark} {:>3}  {} · {} · {}",
+                    i + 1,
+                    s(&t["artist"]),
+                    s(&t["title"]),
+                    fmt_ms(t["duration_ms"].as_i64().unwrap_or(0))
+                );
+            }
+            println!("{} tracks", rows.len());
+        }
+        Cmd::Devices => print_rows(&value, &["name", "description"]),
     }
     Ok(())
 }
 
-async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
+/// "1:30" → 90000, "90" → 90000, "2:05:00" → hours too.
+fn parse_time(s: &str) -> Result<u64> {
+    let mut total = 0f64;
+    for part in s.split(':') {
+        let v: f64 = part
+            .trim()
+            .parse()
+            .with_context(|| format!("not a time: {s}"))?;
+        total = total * 60.0 + v;
+    }
+    Ok((total.max(0.0) * 1000.0) as u64)
+}
+
+fn fmt_ms(ms: i64) -> String {
+    let secs = ms.max(0) / 1000;
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+fn print_now(v: &Value, lyric: Option<&str>) {
+    let state = s(&v["state"]);
+    if let Some(e) = v["error"].as_str() {
+        eprintln!("player: {e}");
+    }
+    if v["track"].is_null() {
+        println!(
+            "stopped · {} in queue",
+            v["queue"].as_array().map(|q| q.len()).unwrap_or(0)
+        );
+        return;
+    }
+    let t = &v["track"];
+    println!("{} · {}", s(&t["artist"]), s(&t["title"]));
+    println!(
+        "{}{}",
+        s(&t["album"]),
+        t["year"]
+            .as_i64()
+            .map(|y| format!(" ({y})"))
+            .unwrap_or_default()
+    );
+    let bar = {
+        let pos = v["position_ms"].as_f64().unwrap_or(0.0);
+        let dur = v["duration_ms"].as_f64().unwrap_or(0.0).max(1.0);
+        let w = 30usize;
+        let filled = ((pos / dur) * w as f64).round().clamp(0.0, w as f64) as usize;
+        format!("{}{}", "━".repeat(filled), "─".repeat(w - filled))
+    };
+    println!(
+        "{state} {} {bar} {}",
+        fmt_ms(v["position_ms"].as_i64().unwrap_or(0)),
+        fmt_ms(v["duration_ms"].as_i64().unwrap_or(0))
+    );
+    let mut line = format!("{} · {}", s(&v["format"]), s(&v["device"]));
+    if v["bit_perfect"].as_bool().unwrap_or(false) {
+        line.push_str(" · bit-perfect");
+    }
+    if let Some(vol) = v["volume"].as_f64() {
+        if vol < 0.999 {
+            line.push_str(&format!(" · volume {:.0}%", vol * 100.0));
+        }
+    }
+    if let (Some(i), Some(q)) = (v["index"].as_u64(), v["queue"].as_array()) {
+        line.push_str(&format!(" · {}/{} in queue", i + 1, q.len()));
+    }
+    println!("{line}");
+    if let Some(l) = lyric {
+        println!("\n{l}");
+    }
+}
+
+/// The lyric line for the current position, when the lyrics are synced.
+async fn current_lyric<F, Fut>(now: &Value, get: &F) -> Option<String>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let id = now["track"]["id"].as_i64()?;
+    if !now["track"]["has_lyrics"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let lyrics = get(format!("/api/tracks/{id}/lyrics")).await.ok()?;
+    if !lyrics["synced"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let pos = now["position_ms"].as_u64().unwrap_or(0);
+    let text = lyrics["text"].as_str()?;
+    let mut best: Option<(u64, &str)> = None;
+    for line in text.lines() {
+        let Some((stamp, rest)) = parse_lrc_line(line) else {
+            continue;
+        };
+        if stamp <= pos && best.map(|(b, _)| stamp >= b).unwrap_or(true) {
+            best = Some((stamp, rest));
+        }
+    }
+    best.map(|(_, l)| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+}
+
+/// "[01:23.45]words" → (83450, "words").
+fn parse_lrc_line(line: &str) -> Option<(u64, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let (stamp, text) = (&rest[..end], &rest[end + 1..]);
+    let (m, sec) = stamp.split_once(':')?;
+    let m: u64 = m.parse().ok()?;
+    let sec: f64 = sec.parse().ok()?;
+    Some((m * 60_000 + (sec * 1000.0) as u64, text))
+}
+
+async fn post_json(http: &reqwest::Client, url: String, body: Value) -> Result<Value> {
     let res = http
         .post(&url)
+        .json(&body)
         .send()
         .await
         .with_context(|| format!("is katalogd running? could not reach {url}"))?;
+    check(res).await
+}
+
+async fn delete(http: &reqwest::Client, url: String) -> Result<Value> {
+    let res = http
+        .delete(&url)
+        .send()
+        .await
+        .with_context(|| format!("is katalogd running? could not reach {url}"))?;
+    check(res).await
+}
+
+async fn check(res: reqwest::Response) -> Result<Value> {
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -205,6 +501,15 @@ async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
         );
     }
     Ok(body)
+}
+
+async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
+    let res = http
+        .post(&url)
+        .send()
+        .await
+        .with_context(|| format!("is katalogd running? could not reach {url}"))?;
+    check(res).await
 }
 
 fn s(v: &Value) -> String {
