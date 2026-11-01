@@ -21,7 +21,7 @@ use rusqlite_shim::Db;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -48,6 +48,11 @@ pub struct Args {
     /// Do not look anything up online (art, lyrics).
     #[arg(long)]
     no_network: bool,
+
+    /// Look up missing art and lyrics by itself after every scan. Off by default:
+    /// run `katalog fetch` when you want it.
+    #[arg(long)]
+    auto_fetch: bool,
 
     /// Do not write fetched lyrics as .lrc files next to the music.
     #[arg(long)]
@@ -169,7 +174,7 @@ async fn main() -> Result<()> {
         if let Err(e) = run_scan(&s).await {
             error!("scan failed: {e:#}");
         }
-        if !s.args.no_network {
+        if s.args.auto_fetch && !s.args.no_network {
             if let Err(e) = fetch_missing(&s, FetchKind::All, false).await {
                 error!("fetch: {e:#}");
             }
@@ -323,14 +328,14 @@ async fn fetch_inner(
                     Ok(Some((mime, data))) => {
                         fetch::store_art(&state.db.lock(), a.id, &mime, &data)?;
                         report.art_found += 1;
-                        info!("art: {} · {}", a.artist, a.title);
+                        debug!("art: {} · {}", a.artist, a.title);
                     }
                     Ok(None) => {
                         fetch::mark_art_missing(&state.db.lock(), a.id)?;
                         report.art_missing += 1;
                     }
                     Err(e) => {
-                        warn!("art lookup failed for {} · {}: {e:#}", a.artist, a.title);
+                        debug!("art lookup failed for {} · {}: {e:#}", a.artist, a.title);
                         report.failed += 1;
                         skip_albums.insert(a.id);
                         if is_offline(&e) {
@@ -354,6 +359,13 @@ async fn fetch_inner(
             if tracks.is_empty() {
                 break;
             }
+            let done = report.lyrics_found + report.lyrics_missing + report.failed;
+            if done > 0 {
+                info!(
+                    "lyrics: {} found, {} not online, {} failed so far",
+                    report.lyrics_found, report.lyrics_missing, report.failed
+                );
+            }
             for t in tracks {
                 match fetcher
                     .lrclib(&t.artist, &t.title, &t.album, t.duration_ms)
@@ -362,14 +374,15 @@ async fn fetch_inner(
                     Ok(Some(text)) => {
                         fetch::store_lyrics(&state.db.lock(), &t, &text, write_lrc)?;
                         report.lyrics_found += 1;
-                        info!("lyrics: {} · {}", t.artist, t.title);
+                        debug!("lyrics: {} · {}", t.artist, t.title);
                     }
                     Ok(None) => {
                         fetch::mark_lyrics_missing(&state.db.lock(), t.id)?;
                         report.lyrics_missing += 1;
+                        debug!("no lyrics online: {} · {}", t.artist, t.title);
                     }
                     Err(e) => {
-                        warn!("lyrics lookup failed for {} · {}: {e:#}", t.artist, t.title);
+                        debug!("lyrics lookup failed for {} · {}: {e:#}", t.artist, t.title);
                         report.failed += 1;
                         skip_tracks.insert(t.id);
                         if is_offline(&e) {

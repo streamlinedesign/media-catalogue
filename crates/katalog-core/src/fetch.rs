@@ -203,6 +203,10 @@ impl Fetcher {
     }
 
     /// Lyrics from LRCLIB, synced when they have them, plain otherwise.
+    /// Lyrics from LRCLIB. Tries the exact match first, then the same with the
+    /// title and album stripped of "(Remastered 2009)", "[Live]", "feat." and the
+    /// like, then a free search where the best hit by duration and title wins.
+    /// Returns None only when none of that finds anything.
     pub async fn lrclib(
         &self,
         artist: &str,
@@ -210,40 +214,284 @@ impl Fetcher {
         album: &str,
         duration_ms: i64,
     ) -> Result<Option<String>> {
-        #[derive(Deserialize)]
-        struct Hit {
-            #[serde(rename = "syncedLyrics")]
-            synced: Option<String>,
-            #[serde(rename = "plainLyrics")]
-            plain: Option<String>,
-            instrumental: Option<bool>,
+        let secs = (duration_ms as f64 / 1000.0).round() as i64;
+        let c_artist = clean_artist(artist);
+        let c_title = clean_title(title);
+        let c_album = clean_title(album);
+
+        // 1. Exact, then cleaned, then without the album (albums differ most between tags and LRCLIB).
+        let mut attempts: Vec<(String, String, Option<String>)> = vec![(
+            artist.to_string(),
+            title.to_string(),
+            Some(album.to_string()),
+        )];
+        for cand in [
+            (c_artist.clone(), c_title.clone(), Some(c_album.clone())),
+            (artist.to_string(), title.to_string(), None),
+            (c_artist.clone(), c_title.clone(), None),
+        ] {
+            if !attempts.contains(&cand) {
+                attempts.push(cand);
+            }
         }
-        let url = format!(
-            "https://lrclib.net/api/get?artist_name={}&track_name={}&album_name={}&duration={}",
+        for (a, t, al) in &attempts {
+            if let Some(hit) = self.lrclib_get(a, t, al.as_deref(), secs).await? {
+                return Ok(Some(hit));
+            }
+        }
+
+        // 2. Search and pick the closest.
+        for (a, t) in [(artist, title), (c_artist.as_str(), c_title.as_str())] {
+            let hits = self.lrclib_search(a, t).await?;
+            if let Some(text) = pick_hit(hits, &c_title, duration_ms) {
+                return Ok(Some(text));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn lrclib_get(
+        &self,
+        artist: &str,
+        title: &str,
+        album: Option<&str>,
+        secs: i64,
+    ) -> Result<Option<String>> {
+        let mut url = format!(
+            "https://lrclib.net/api/get?artist_name={}&track_name={}&duration={secs}",
             urlencoding::encode(artist),
             urlencoding::encode(title),
-            urlencoding::encode(album),
-            (duration_ms as f64 / 1000.0).round() as i64
         );
+        if let Some(al) = album {
+            url.push_str(&format!("&album_name={}", urlencoding::encode(al)));
+        }
         let res = self.http.get(&url).send().await?;
         if res.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let hit: Hit = res
+        let hit: LrcHit = res
             .error_for_status()?
             .json()
             .await
             .context("lrclib json")?;
-        if hit.instrumental == Some(true) {
-            return Ok(Some("[instrumental]".into()));
-        }
-        Ok(hit
-            .synced
-            .filter(|s| !s.trim().is_empty())
-            .or(hit.plain.filter(|s| !s.trim().is_empty())))
+        Ok(hit.text())
     }
+
+    async fn lrclib_search(&self, artist: &str, title: &str) -> Result<Vec<LrcHit>> {
+        let url = format!(
+            "https://lrclib.net/api/search?artist_name={}&track_name={}",
+            urlencoding::encode(artist),
+            urlencoding::encode(title),
+        );
+        let res = self.http.get(&url).send().await?;
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        res.error_for_status()?
+            .json()
+            .await
+            .context("lrclib search json")
+    }
+}
+
+#[derive(Deserialize)]
+struct LrcHit {
+    #[serde(rename = "trackName", default)]
+    track_name: String,
+    #[serde(default)]
+    duration: Option<f64>,
+    #[serde(rename = "syncedLyrics")]
+    synced: Option<String>,
+    #[serde(rename = "plainLyrics")]
+    plain: Option<String>,
+    instrumental: Option<bool>,
+}
+
+impl LrcHit {
+    fn text(self) -> Option<String> {
+        if self.instrumental == Some(true) {
+            return Some("[instrumental]".into());
+        }
+        self.synced
+            .filter(|s| !s.trim().is_empty())
+            .or(self.plain.filter(|s| !s.trim().is_empty()))
+    }
+}
+
+/// The best search hit: same (cleaned) title, duration within five seconds,
+/// synced before plain. Nothing that does not match the title.
+fn pick_hit(hits: Vec<LrcHit>, want_title: &str, duration_ms: i64) -> Option<String> {
+    let want = normalize(want_title);
+    let mut best: Option<(i64, LrcHit)> = None;
+    for h in hits {
+        if normalize(&clean_title(&h.track_name)) != want {
+            continue;
+        }
+        let diff = h
+            .duration
+            .map(|d| ((d * 1000.0) as i64 - duration_ms).abs())
+            .unwrap_or(i64::MAX);
+        if duration_ms > 0 && diff > 5000 {
+            continue;
+        }
+        // Lower score wins: duration difference, plus a penalty for plain-only.
+        let score = diff
+            + if h
+                .synced
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+            {
+                0
+            } else {
+                2000
+            };
+        if best.as_ref().map(|(s, _)| score < *s).unwrap_or(true) {
+            best = Some((score, h));
+        }
+    }
+    best.and_then(|(_, h)| h.text())
+}
+
+/// Drops the bits tags carry and lyric databases do not: "(Remastered 2009)",
+/// "[Live at ...]", " - 2011 Remaster", "(feat. X)", "(Deluxe Edition)".
+pub fn clean_title(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for ch in s.chars() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    // " - 2009 Remaster", " - Live", " - Radio Edit"
+    let lowered = out.to_ascii_lowercase();
+    for marker in [
+        " - remaster",
+        " - live",
+        " - radio edit",
+        " - single version",
+        " - mono",
+        " - stereo",
+        " - demo",
+        " - bonus track",
+        " - acoustic",
+        " - edit",
+        " - version",
+    ] {
+        if let Some(i) = lowered.find(marker) {
+            out.truncate(i);
+            break;
+        }
+    }
+    // " - 2009 Remaster" style with a year in front
+    if let Some(i) = out.rfind(" - ") {
+        let tail = out[i + 3..].to_ascii_lowercase();
+        if tail.contains("remaster") || tail.contains("mix") || tail.contains("edition") {
+            out.truncate(i);
+        }
+    }
+    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if out.is_empty() {
+        s.trim().to_string()
+    } else {
+        out
+    }
+}
+
+/// "Artist feat. Someone" → "Artist"; "A & B" and "A, B" are kept.
+pub fn clean_artist(s: &str) -> String {
+    let lowered = s.to_ascii_lowercase();
+    let cut = [
+        " feat. ",
+        " feat ",
+        " ft. ",
+        " ft ",
+        " featuring ",
+        " with ",
+    ]
+    .iter()
+    .filter_map(|m| lowered.find(m))
+    .min();
+    let base = match cut {
+        Some(i) if i > 0 => &s[..i],
+        _ => s,
+    };
+    let base = clean_title(base);
+    if base.is_empty() {
+        s.trim().to_string()
+    } else {
+        base
+    }
+}
+
+/// Lowercase letters and digits only, so "Don't Stop" and "Dont stop" compare equal.
+fn normalize(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titles_lose_their_brackets_and_remaster_tails() {
+        assert_eq!(
+            clean_title("Paranoid Android (Remastered 2009)"),
+            "Paranoid Android"
+        );
+        assert_eq!(clean_title("Starless - 2011 Remaster"), "Starless");
+        assert_eq!(
+            clean_title("Disorder [Live at Les Bains Douches]"),
+            "Disorder"
+        );
+        assert_eq!(clean_title("OK Computer (Deluxe Edition)"), "OK Computer");
+        assert_eq!(clean_title("(Untitled)"), "(Untitled)");
+        assert_eq!(
+            clean_title("21st Century Schizoid Man"),
+            "21st Century Schizoid Man"
+        );
+    }
+
+    #[test]
+    fn artists_lose_features() {
+        assert_eq!(
+            clean_artist("Massive Attack feat. Elizabeth Fraser"),
+            "Massive Attack"
+        );
+        assert_eq!(clean_artist("Simon & Garfunkel"), "Simon & Garfunkel");
+        assert_eq!(clean_artist("Azra"), "Azra");
+    }
+
+    #[test]
+    fn search_hits_are_picked_by_title_and_duration() {
+        let hit = |name: &str, dur: f64, synced: bool| LrcHit {
+            track_name: name.into(),
+            duration: Some(dur),
+            synced: synced.then(|| "[00:01.00]x".to_string()),
+            plain: Some("x".into()),
+            instrumental: None,
+        };
+        let hits = vec![
+            hit("Airbag (Live)", 290.0, true),
+            hit("Airbag", 284.0, false),
+            hit("Airbag", 285.0, true),
+            hit("Something Else", 285.0, true),
+        ];
+        assert_eq!(
+            pick_hit(hits, "Airbag", 285_000).as_deref(),
+            Some("[00:01.00]x")
+        );
+        let far = vec![hit("Airbag", 200.0, true)];
+        assert_eq!(pick_hit(far, "Airbag", 285_000), None);
+    }
 }
