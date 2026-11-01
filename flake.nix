@@ -16,6 +16,7 @@
           cargoLock.lockFile = ./Cargo.lock;
           # The Go web catalogue is not part of this build.
           nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.alsa-lib ];
           meta.mainProgram = "katalogd";
         };
         default = katalog;
@@ -23,7 +24,7 @@
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cargo rustc rust-analyzer clippy rustfmt pkg-config go ffmpeg ];
+          packages = with pkgs; [ cargo rustc rust-analyzer clippy rustfmt pkg-config alsa-lib go ffmpeg ];
         };
       });
 
