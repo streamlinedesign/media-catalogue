@@ -1,0 +1,6 @@
+dist/
+site/
+*.db
+*.db-wal
+*.db-shm
+/katalog
