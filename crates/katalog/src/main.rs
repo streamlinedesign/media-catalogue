@@ -59,9 +59,16 @@ enum Cmd {
     Album {
         id: i64,
     },
-    /// Lyrics of a track
+    /// Lyrics of a track. When there are none it searches LRCLIB and lets you
+    /// pick a hit or type a different search.
     Lyrics {
         id: i64,
+        /// Search with this text instead of the track's title
+        #[arg(long)]
+        search: Option<String>,
+        /// Save hit number N of the search without asking
+        #[arg(long)]
+        pick: Option<usize>,
     },
     /// Rescan the music folder now
     Scan,
@@ -185,7 +192,24 @@ async fn run() -> Result<()> {
             get(format!("/api/tracks{}{sep}limit={limit}", enc(query))).await?
         }
         Cmd::Album { id } => get(format!("/api/albums/{id}")).await?,
-        Cmd::Lyrics { id } => get(format!("/api/tracks/{id}/lyrics")).await?,
+        Cmd::Lyrics { id, search, pick } => {
+            let existing = if search.is_none() {
+                match get(format!("/api/tracks/{id}/lyrics")).await {
+                    Ok(v) => Some(v),
+                    Err(e) if e.to_string().starts_with("404") => None,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                None
+            };
+            match existing {
+                Some(v) => v,
+                None => {
+                    let track = get(format!("/api/tracks/{id}")).await?;
+                    return lyrics_search(&http, base, *id, &track, search.clone(), *pick).await;
+                }
+            }
+        }
         Cmd::Scan => post(&http, format!("{base}/api/scan")).await?,
         Cmd::Fetch { kind, retry } => {
             if !["lyrics", "art", "all"].contains(&kind.as_str()) {
@@ -354,6 +378,108 @@ async fn run() -> Result<()> {
         Cmd::Devices => print_rows(&value, &["name", "description"]),
     }
     Ok(())
+}
+
+/// No lyrics stored: search LRCLIB, show the hits, let the user pick one or
+/// retype the search (to drop the "(Remastered)" that gets in the way).
+async fn lyrics_search(
+    http: &reqwest::Client,
+    base: &str,
+    id: i64,
+    track: &Value,
+    first: Option<String>,
+    pick: Option<usize>,
+) -> Result<()> {
+    let title = s(&track["title"]);
+    let artist = s(&track["artist"]);
+    let mut query = first.unwrap_or_else(|| title.clone());
+    // The artist narrows the first search only; a typed query stands alone.
+    let mut with_artist = true;
+    println!("no lyrics stored for {artist} · {title}");
+    loop {
+        let mut url = format!(
+            "{base}/api/tracks/{id}/lyrics/search?q={}",
+            urlencoding(&query)
+        );
+        if with_artist && !artist.is_empty() {
+            url.push_str(&format!("&artist={}", urlencoding(&artist)));
+        }
+        let res = http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("is katalogd running? could not reach {url}"))?;
+        let hits = check(res).await?;
+        let hits = hits.as_array().cloned().unwrap_or_default();
+        println!(
+            "\nsearch: {query}{}",
+            if with_artist {
+                format!(" · {artist}")
+            } else {
+                String::new()
+            }
+        );
+        if hits.is_empty() {
+            println!("nothing found");
+        }
+        for (i, h) in hits.iter().enumerate() {
+            println!(
+                "{:>3}  {} · {} · {} · {} · {}",
+                i + 1,
+                s(&h["artist"]),
+                s(&h["title"]),
+                s(&h["album"]),
+                fmt_ms(h["duration_ms"].as_i64().unwrap_or(0)),
+                if h["synced"].as_bool().unwrap_or(false) {
+                    "synced"
+                } else {
+                    "plain"
+                }
+            );
+        }
+        let choice = match pick {
+            Some(n) => n.to_string(),
+            None => {
+                eprint!("\nnumber to save, new search text, or Enter to stop: ");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim().to_string()
+            }
+        };
+        if choice.is_empty() {
+            return Ok(());
+        }
+        if let Ok(n) = choice.parse::<usize>() {
+            let Some(h) = n.checked_sub(1).and_then(|i| hits.get(i)) else {
+                if pick.is_some() {
+                    anyhow::bail!("no hit {n}");
+                }
+                println!("no hit {n}");
+                continue;
+            };
+            let body = serde_json::json!({ "text": h["text"], "source": h["source"] });
+            let res = http
+                .put(format!("{base}/api/tracks/{id}/lyrics"))
+                .json(&body)
+                .send()
+                .await
+                .context("is katalogd running?")?;
+            let saved = check(res).await?;
+            println!(
+                "saved {} lyrics from {} ({} lines)",
+                if saved["synced"].as_bool().unwrap_or(false) {
+                    "synced"
+                } else {
+                    "plain"
+                },
+                s(&saved["source"]),
+                s(&saved["text"]).lines().count()
+            );
+            return Ok(());
+        }
+        query = choice;
+        with_artist = false;
+    }
 }
 
 /// "1:30" → 90000, "90" → 90000, "2:05:00" → hours too.

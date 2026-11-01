@@ -119,15 +119,32 @@ pub fn store_lyrics(
     text: &str,
     write_lrc: bool,
 ) -> Result<()> {
+    save_lyrics(conn, track.id, &track.path, text, "lrclib", write_lrc)
+}
+
+/// Saves lyrics for a track, replacing what was there (a hand-picked search
+/// hit wins over an earlier automatic one), and writes the `.lrc` when asked.
+pub fn save_lyrics(
+    conn: &Connection,
+    track_id: i64,
+    path: &str,
+    text: &str,
+    source: &str,
+    write_lrc: bool,
+) -> Result<()> {
     let synced = lyrics::is_synced(text);
     conn.execute(
-        "INSERT INTO lyrics (track_id, synced, text, source) VALUES (?1, ?2, ?3, 'lrclib')
-         ON CONFLICT(track_id) DO NOTHING",
-        params![track.id, synced as i64, text],
+        "INSERT INTO lyrics (track_id, synced, text, source) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(track_id) DO UPDATE SET synced = excluded.synced, text = excluded.text, source = excluded.source",
+        params![track_id, synced as i64, text, source],
+    )?;
+    conn.execute(
+        "UPDATE tracks SET lyrics_tried = 0 WHERE id = ?1",
+        [track_id],
     )?;
     if write_lrc {
-        if let Err(err) = lyrics::write_sidecar(Path::new(&track.path), text) {
-            warn!("could not write .lrc beside {}: {err}", track.path);
+        if let Err(err) = lyrics::write_sidecar(Path::new(path), text) {
+            warn!("could not write .lrc beside {path}: {err}");
         }
     }
     Ok(())
@@ -277,6 +294,52 @@ impl Fetcher {
         Ok(hit.text())
     }
 
+    /// A free search on LRCLIB, for picking lyrics by hand. `query` is whatever
+    /// the user typed; `artist` narrows it when given.
+    pub async fn search_lyrics(&self, query: &str, artist: Option<&str>) -> Result<Vec<LyricsHit>> {
+        let mut url = format!(
+            "https://lrclib.net/api/search?q={}",
+            urlencoding::encode(query.trim())
+        );
+        if let Some(a) = artist.map(str::trim).filter(|a| !a.is_empty()) {
+            url.push_str(&format!("&artist_name={}", urlencoding::encode(a)));
+        }
+        let res = self.http.get(&url).send().await?;
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        let hits: Vec<LrcHit> = res
+            .error_for_status()?
+            .json()
+            .await
+            .context("lrclib search json")?;
+        Ok(hits
+            .into_iter()
+            .filter_map(|h| {
+                let synced = h
+                    .synced
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                let meta = (
+                    h.track_name.clone(),
+                    h.artist_name.clone(),
+                    h.album_name.clone(),
+                    h.duration,
+                );
+                h.text().map(|text| LyricsHit {
+                    source: "lrclib",
+                    title: meta.0,
+                    artist: meta.1,
+                    album: meta.2,
+                    duration_ms: meta.3.map(|d| (d * 1000.0) as i64),
+                    synced,
+                    text,
+                })
+            })
+            .collect())
+    }
+
     async fn lrclib_search(&self, artist: &str, title: &str) -> Result<Vec<LrcHit>> {
         let url = format!(
             "https://lrclib.net/api/search?artist_name={}&track_name={}",
@@ -294,10 +357,26 @@ impl Fetcher {
     }
 }
 
+/// One search result, with its lyrics, ready to be shown and picked.
+#[derive(Debug, Clone, Serialize)]
+pub struct LyricsHit {
+    pub source: &'static str,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: Option<i64>,
+    pub synced: bool,
+    pub text: String,
+}
+
 #[derive(Deserialize)]
 struct LrcHit {
     #[serde(rename = "trackName", default)]
     track_name: String,
+    #[serde(rename = "artistName", default)]
+    artist_name: String,
+    #[serde(rename = "albumName", default)]
+    album_name: String,
     #[serde(default)]
     duration: Option<f64>,
     #[serde(rename = "syncedLyrics")]
@@ -476,6 +555,8 @@ mod tests {
     fn search_hits_are_picked_by_title_and_duration() {
         let hit = |name: &str, dur: f64, synced: bool| LrcHit {
             track_name: name.into(),
+            artist_name: String::new(),
+            album_name: String::new(),
             duration: Some(dur),
             synced: synced.then(|| "[00:01.00]x".to_string()),
             plain: Some("x".into()),
