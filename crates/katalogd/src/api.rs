@@ -180,7 +180,7 @@ async fn scan(State(s): State<Shared>) -> ApiResult<katalog_core::ScanReport> {
     let report = crate::run_scan(&s)
         .await
         .map_err(|e| ApiError(StatusCode::CONFLICT, format!("{e:#}")))?;
-    if !s.args.no_network {
+    if s.args.auto_fetch && !s.args.no_network {
         let s2 = s.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::fetch_missing(&s2, crate::FetchKind::All, false).await {

@@ -28,6 +28,8 @@ on Debian and Ubuntu, or just `nix develop`.
     katalog fetch art --retry          # also look again at albums that had nothing online
 
 The daemon keeps watching the folder: a new rip or a deleted album shows up within seconds.
+Nothing is looked up online until you ask: `katalog fetch lyrics` when the wifi is on. Pass
+`--auto-fetch` to katalogd if you want it to happen by itself after every scan.
 
 ### Playing
 
@@ -61,6 +63,7 @@ has played. This is what playlists and the radio will be built on.
 | `--bind` | `KATALOG_BIND` | `127.0.0.1:7300` | HTTP address. `0.0.0.0:7300` makes it reachable from your phone |
 | `--socket` | `KATALOG_SOCKET` | `$XDG_RUNTIME_DIR/katalogd.sock` | Unix socket for local views |
 | `--no-network` | | | Never call MusicBrainz or LRCLIB |
+| `--auto-fetch` | | | Look up missing art and lyrics after every scan instead of only on `katalog fetch` |
 | `--no-lrc-files` | | | Keep fetched lyrics in the database only, do not write `.lrc` files |
 | `--scan-only` | | | Scan once, print the report, exit |
 | `--device` | `KATALOG_DEVICE` | `auto` | ALSA output: `auto`, `default`, `hw:1,0`, `hw:CARD=DAC` (`aplay -l` or `katalog devices`) |
@@ -73,8 +76,10 @@ has played. This is what playlists and the radio will be built on.
   album folder, then the Cover Art Archive. Each image is stored once, whatever how many
   tracks carry it.
 - Lyrics: the embedded `LYRICS` tag, then `Track.lrc` or `Track.txt` beside the file, then
-  LRCLIB (synced when they have them). Fetched lyrics are written back as `.lrc` so they stay
-  with your music.
+  LRCLIB (synced when they have them). The lookup tries the exact tags, then the title and album
+  with "(Remastered 2009)", "[Live]", "feat." and the like removed, then a search where the hit
+  with the same title and a duration within five seconds wins. Fetched lyrics are written back
+  as `.lrc` so they stay with your music.
 - Fetching is its own step. A lookup that fails (offline, bad answer) is simply tried again next
   time; only a confirmed "nothing found" is remembered, and `--retry` forgets those too.
 - Unchanged files (same size and mtime) are skipped, so a rescan of a large library is a
