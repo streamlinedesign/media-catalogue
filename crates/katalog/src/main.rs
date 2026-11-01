@@ -48,6 +48,15 @@ enum Cmd {
     Lyrics { id: i64 },
     /// Rescan the music folder now
     Scan,
+    /// Look up missing lyrics or art online, now. Failures are retried next time.
+    Fetch {
+        /// lyrics, art or all
+        #[arg(default_value = "all")]
+        kind: String,
+        /// Also look again at titles that had nothing online last time
+        #[arg(long)]
+        retry: bool,
+    },
     /// The stream URL of a track
     Url { id: i64 },
 }
@@ -103,13 +112,13 @@ async fn run() -> Result<()> {
         }
         Cmd::Album { id } => get(format!("/api/albums/{id}")).await?,
         Cmd::Lyrics { id } => get(format!("/api/tracks/{id}/lyrics")).await?,
-        Cmd::Scan => {
-            let res = http
-                .post(format!("{base}/api/scan"))
-                .send()
-                .await
-                .context("is katalogd running?")?;
-            res.json().await?
+        Cmd::Scan => post(&http, format!("{base}/api/scan")).await?,
+        Cmd::Fetch { kind, retry } => {
+            if !["lyrics", "art", "all"].contains(&kind.as_str()) {
+                anyhow::bail!("kind must be lyrics, art or all");
+            }
+            eprintln!("fetching {kind}, this answers when it is done ...");
+            post(&http, format!("{base}/api/fetch?kind={kind}&retry={retry}")).await?
         }
         Cmd::Url { id } => {
             println!("{base}/stream/{id}");
@@ -170,9 +179,32 @@ async fn run() -> Result<()> {
             s(&value["unreadable"]),
             value["seconds"].as_f64().unwrap_or(0.0)
         ),
+        Cmd::Fetch { .. } => println!(
+            "{} covers found · {} lyrics found · {} albums and {} tracks have nothing online · {} lookups failed (run again later)",
+            s(&value["art_found"]), s(&value["lyrics_found"]), s(&value["art_missing"]), s(&value["lyrics_missing"]), s(&value["failed"])
+        ),
         Cmd::Url { .. } => {}
     }
     Ok(())
+}
+
+async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
+    let res = http
+        .post(&url)
+        .send()
+        .await
+        .with_context(|| format!("is katalogd running? could not reach {url}"))?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        anyhow::bail!(
+            "{status}: {}",
+            body.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("request failed")
+        );
+    }
+    Ok(body)
 }
 
 fn s(v: &Value) -> String {

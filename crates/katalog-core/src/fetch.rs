@@ -25,6 +25,8 @@ pub struct FetchReport {
     pub art_missing: usize,
     pub lyrics_found: usize,
     pub lyrics_missing: usize,
+    /// Lookups that errored (network, bad answer). These are retried next time.
+    pub failed: usize,
 }
 
 pub struct Fetcher {
@@ -129,6 +131,19 @@ pub fn store_lyrics(
         }
     }
     Ok(())
+}
+
+/// Forget earlier "nothing found" results so every album is looked up again.
+pub fn reset_art_tried(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("UPDATE albums SET art_tried = 0 WHERE art_id IS NULL", [])?)
+}
+
+/// Forget earlier "nothing found" results so every track is looked up again.
+pub fn reset_lyrics_tried(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE tracks SET lyrics_tried = 0 WHERE id NOT IN (SELECT track_id FROM lyrics)",
+        [],
+    )?)
 }
 
 pub fn mark_lyrics_missing(conn: &Connection, track_id: i64) -> Result<()> {

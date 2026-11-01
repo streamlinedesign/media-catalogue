@@ -83,6 +83,7 @@ pub struct State {
     pub music_root: PathBuf,
     pub args: Args,
     pub scanning: std::sync::atomic::AtomicBool,
+    pub fetching: std::sync::atomic::AtomicBool,
 }
 
 pub type Shared = Arc<State>;
@@ -131,13 +132,17 @@ async fn main() -> Result<()> {
         music_root: music_root.clone(),
         args: args.clone(),
         scanning: std::sync::atomic::AtomicBool::new(false),
+        fetching: std::sync::atomic::AtomicBool::new(false),
     });
 
     if args.scan_only {
         let report = run_scan(&state).await?;
         println!("{}", serde_json::to_string_pretty(&report)?);
         if !args.no_network {
-            fetch_missing(&state).await;
+            match fetch_missing(&state, FetchKind::All, false).await {
+                Ok(r) => println!("{}", serde_json::to_string_pretty(&r)?),
+                Err(e) => error!("fetch: {e:#}"),
+            }
         }
         return Ok(());
     }
@@ -149,7 +154,9 @@ async fn main() -> Result<()> {
             error!("scan failed: {e:#}");
         }
         if !s.args.no_network {
-            fetch_missing(&s).await;
+            if let Err(e) = fetch_missing(&s, FetchKind::All, false).await {
+                error!("fetch: {e:#}");
+            }
         }
     });
 
@@ -224,48 +231,93 @@ pub async fn scan_paths(
     result
 }
 
+/// What a fetch should look for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FetchKind {
+    Art,
+    Lyrics,
+    All,
+}
+
 /// Looks up missing art and lyrics online. The database is locked only for the
 /// short reads and writes, never while waiting on the network.
-pub async fn fetch_missing(state: &Shared) {
-    use katalog_core::fetch;
-    let fetcher = match Fetcher::new() {
-        Ok(f) => f,
-        Err(e) => {
-            error!("fetcher: {e:#}");
-            return;
+///
+/// A lookup that errors (offline, a bad answer) is left alone and tried again on
+/// the next run. Only a confirmed "nothing found" is remembered, and `retry`
+/// forgets those too. One fetch runs at a time; a second call returns an error.
+pub async fn fetch_missing(
+    state: &Shared,
+    kind: FetchKind,
+    retry: bool,
+) -> Result<katalog_core::fetch::FetchReport> {
+    use std::sync::atomic::Ordering;
+    if state.fetching.swap(true, Ordering::SeqCst) {
+        anyhow::bail!("a fetch is already running");
+    }
+    let result = fetch_inner(state, kind, retry).await;
+    state.fetching.store(false, Ordering::SeqCst);
+    if let Ok(r) = &result {
+        if r.art_found + r.art_missing + r.lyrics_found + r.lyrics_missing + r.failed > 0 {
+            info!(
+                "fetched {} covers and {} lyrics ({} albums and {} tracks had nothing online, {} lookups failed and will be retried)",
+                r.art_found, r.lyrics_found, r.art_missing, r.lyrics_missing, r.failed
+            );
         }
-    };
+    }
+    result
+}
+
+async fn fetch_inner(
+    state: &Shared,
+    kind: FetchKind,
+    retry: bool,
+) -> Result<katalog_core::fetch::FetchReport> {
+    use katalog_core::fetch;
+    let fetcher = Fetcher::new()?;
     let write_lrc = !state.args.no_lrc_files;
     let mut report = fetch::FetchReport::default();
+    let want_art = matches!(kind, FetchKind::Art | FetchKind::All);
+    let want_lyrics = matches!(kind, FetchKind::Lyrics | FetchKind::All);
 
-    loop {
-        let albums = match fetch::pending_albums(&state.db.lock(), 25) {
-            Ok(a) => a,
-            Err(e) => {
-                error!("fetch: {e:#}");
-                return;
-            }
-        };
+    if retry {
+        let conn = state.db.lock();
+        if want_art {
+            fetch::reset_art_tried(&conn)?;
+        }
+        if want_lyrics {
+            fetch::reset_lyrics_tried(&conn)?;
+        }
+    }
+
+    // Albums are fetched in batches; a failed one is skipped within this run
+    // (so the batch does not spin on it) and comes back on the next run.
+    let mut skip_albums: std::collections::HashSet<i64> = Default::default();
+    while want_art {
+        let albums: Vec<_> = fetch::pending_albums(&state.db.lock(), 25 + skip_albums.len())?
+            .into_iter()
+            .filter(|a| !skip_albums.contains(&a.id))
+            .collect();
         if albums.is_empty() {
             break;
         }
         for a in albums {
             match fetcher.cover_art(&a.artist, &a.title).await {
                 Ok(Some((mime, data))) => {
-                    if let Err(e) = fetch::store_art(&state.db.lock(), a.id, &mime, &data) {
-                        error!("store art: {e:#}");
-                    }
+                    fetch::store_art(&state.db.lock(), a.id, &mime, &data)?;
                     report.art_found += 1;
                     info!("art: {} · {}", a.artist, a.title);
                 }
                 Ok(None) => {
-                    let _ = fetch::mark_art_missing(&state.db.lock(), a.id);
+                    fetch::mark_art_missing(&state.db.lock(), a.id)?;
                     report.art_missing += 1;
                 }
                 Err(e) => {
                     warn!("art lookup failed for {} · {}: {e:#}", a.artist, a.title);
+                    report.failed += 1;
+                    skip_albums.insert(a.id);
                     if is_offline(&e) {
-                        return;
+                        anyhow::bail!("offline: could not reach musicbrainz.org, try again when the network is up");
                     }
                 }
             }
@@ -274,14 +326,12 @@ pub async fn fetch_missing(state: &Shared) {
         }
     }
 
-    loop {
-        let tracks = match fetch::pending_tracks(&state.db.lock(), 50) {
-            Ok(t) => t,
-            Err(e) => {
-                error!("fetch: {e:#}");
-                return;
-            }
-        };
+    let mut skip_tracks: std::collections::HashSet<i64> = Default::default();
+    while want_lyrics {
+        let tracks: Vec<_> = fetch::pending_tracks(&state.db.lock(), 50 + skip_tracks.len())?
+            .into_iter()
+            .filter(|t| !skip_tracks.contains(&t.id))
+            .collect();
         if tracks.is_empty() {
             break;
         }
@@ -291,32 +341,29 @@ pub async fn fetch_missing(state: &Shared) {
                 .await
             {
                 Ok(Some(text)) => {
-                    if let Err(e) = fetch::store_lyrics(&state.db.lock(), &t, &text, write_lrc) {
-                        error!("store lyrics: {e:#}");
-                    }
+                    fetch::store_lyrics(&state.db.lock(), &t, &text, write_lrc)?;
                     report.lyrics_found += 1;
+                    info!("lyrics: {} · {}", t.artist, t.title);
                 }
                 Ok(None) => {
-                    let _ = fetch::mark_lyrics_missing(&state.db.lock(), t.id);
+                    fetch::mark_lyrics_missing(&state.db.lock(), t.id)?;
                     report.lyrics_missing += 1;
                 }
                 Err(e) => {
                     warn!("lyrics lookup failed for {} · {}: {e:#}", t.artist, t.title);
+                    report.failed += 1;
+                    skip_tracks.insert(t.id);
                     if is_offline(&e) {
-                        return;
+                        anyhow::bail!(
+                            "offline: could not reach lrclib.net, try again when the network is up"
+                        );
                     }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
     }
-
-    if report.art_found + report.art_missing + report.lyrics_found + report.lyrics_missing > 0 {
-        info!(
-            "fetched {} covers and {} lyrics ({} albums and {} tracks had nothing online)",
-            report.art_found, report.lyrics_found, report.art_missing, report.lyrics_missing
-        );
-    }
+    Ok(report)
 }
 
 /// A connection error means we are offline: stop instead of failing every title.
