@@ -293,74 +293,78 @@ async fn fetch_inner(
     // Albums are fetched in batches; a failed one is skipped within this run
     // (so the batch does not spin on it) and comes back on the next run.
     let mut skip_albums: std::collections::HashSet<i64> = Default::default();
-    while want_art {
-        let albums: Vec<_> = fetch::pending_albums(&state.db.lock(), 25 + skip_albums.len())?
-            .into_iter()
-            .filter(|a| !skip_albums.contains(&a.id))
-            .collect();
-        if albums.is_empty() {
-            break;
-        }
-        for a in albums {
-            match fetcher.cover_art(&a.artist, &a.title).await {
-                Ok(Some((mime, data))) => {
-                    fetch::store_art(&state.db.lock(), a.id, &mime, &data)?;
-                    report.art_found += 1;
-                    info!("art: {} · {}", a.artist, a.title);
-                }
-                Ok(None) => {
-                    fetch::mark_art_missing(&state.db.lock(), a.id)?;
-                    report.art_missing += 1;
-                }
-                Err(e) => {
-                    warn!("art lookup failed for {} · {}: {e:#}", a.artist, a.title);
-                    report.failed += 1;
-                    skip_albums.insert(a.id);
-                    if is_offline(&e) {
-                        anyhow::bail!("offline: could not reach musicbrainz.org, try again when the network is up");
+    if want_art {
+        loop {
+            let albums: Vec<_> = fetch::pending_albums(&state.db.lock(), 25 + skip_albums.len())?
+                .into_iter()
+                .filter(|a| !skip_albums.contains(&a.id))
+                .collect();
+            if albums.is_empty() {
+                break;
+            }
+            for a in albums {
+                match fetcher.cover_art(&a.artist, &a.title).await {
+                    Ok(Some((mime, data))) => {
+                        fetch::store_art(&state.db.lock(), a.id, &mime, &data)?;
+                        report.art_found += 1;
+                        info!("art: {} · {}", a.artist, a.title);
+                    }
+                    Ok(None) => {
+                        fetch::mark_art_missing(&state.db.lock(), a.id)?;
+                        report.art_missing += 1;
+                    }
+                    Err(e) => {
+                        warn!("art lookup failed for {} · {}: {e:#}", a.artist, a.title);
+                        report.failed += 1;
+                        skip_albums.insert(a.id);
+                        if is_offline(&e) {
+                            anyhow::bail!("offline: could not reach musicbrainz.org, try again when the network is up");
+                        }
                     }
                 }
+                // MusicBrainz asks for one request per second.
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
             }
-            // MusicBrainz asks for one request per second.
-            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         }
     }
 
     let mut skip_tracks: std::collections::HashSet<i64> = Default::default();
-    while want_lyrics {
-        let tracks: Vec<_> = fetch::pending_tracks(&state.db.lock(), 50 + skip_tracks.len())?
-            .into_iter()
-            .filter(|t| !skip_tracks.contains(&t.id))
-            .collect();
-        if tracks.is_empty() {
-            break;
-        }
-        for t in tracks {
-            match fetcher
-                .lrclib(&t.artist, &t.title, &t.album, t.duration_ms)
-                .await
-            {
-                Ok(Some(text)) => {
-                    fetch::store_lyrics(&state.db.lock(), &t, &text, write_lrc)?;
-                    report.lyrics_found += 1;
-                    info!("lyrics: {} · {}", t.artist, t.title);
-                }
-                Ok(None) => {
-                    fetch::mark_lyrics_missing(&state.db.lock(), t.id)?;
-                    report.lyrics_missing += 1;
-                }
-                Err(e) => {
-                    warn!("lyrics lookup failed for {} · {}: {e:#}", t.artist, t.title);
-                    report.failed += 1;
-                    skip_tracks.insert(t.id);
-                    if is_offline(&e) {
-                        anyhow::bail!(
-                            "offline: could not reach lrclib.net, try again when the network is up"
-                        );
+    if want_lyrics {
+        loop {
+            let tracks: Vec<_> = fetch::pending_tracks(&state.db.lock(), 50 + skip_tracks.len())?
+                .into_iter()
+                .filter(|t| !skip_tracks.contains(&t.id))
+                .collect();
+            if tracks.is_empty() {
+                break;
+            }
+            for t in tracks {
+                match fetcher
+                    .lrclib(&t.artist, &t.title, &t.album, t.duration_ms)
+                    .await
+                {
+                    Ok(Some(text)) => {
+                        fetch::store_lyrics(&state.db.lock(), &t, &text, write_lrc)?;
+                        report.lyrics_found += 1;
+                        info!("lyrics: {} · {}", t.artist, t.title);
+                    }
+                    Ok(None) => {
+                        fetch::mark_lyrics_missing(&state.db.lock(), t.id)?;
+                        report.lyrics_missing += 1;
+                    }
+                    Err(e) => {
+                        warn!("lyrics lookup failed for {} · {}: {e:#}", t.artist, t.title);
+                        report.failed += 1;
+                        skip_tracks.insert(t.id);
+                        if is_offline(&e) {
+                            anyhow::bail!(
+                                "offline: could not reach lrclib.net, try again when the network is up"
+                            );
+                        }
                     }
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
     }
     Ok(report)
