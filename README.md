@@ -1,76 +1,84 @@
 # Katalog
 
-A personal catalogue of movies, TV shows, albums, books and comics in one binary.
-The web page is built into the binary and everything else lives in one SQLite file.
-There's no Node, no runtime to install and no other files to ship.
+A personal media library for Linux. Music first.
+
+`katalogd` owns the library: it scans `~/Library/Music`, keeps one SQLite file in line
+with it, finds album art and lyrics, and serves everything over HTTP so any view can
+use it: the desktop window (coming), the `katalog` command line, xmobar, or a phone on
+the same network. One real system instead of a daemon and a pile of half-clients.
+
+The plan, the design decisions and the milestones are in the project's plan document.
+The older web catalogue (Go, static page) lives on in [docs/web-catalogue.md](docs/web-catalogue.md).
 
 ## Run it
 
-    ./katalog serve
+Needs Rust 1.85 or newer (or `nix develop`).
 
-Open http://localhost:8080. On first run, `katalog.db` is created next to you with 39 sample titles.
-Use `-addr :8080` to open it to other devices on your network, and `-db path/to/file.db` to use another database.
+    cargo build --release
+    ./target/release/katalogd          # scans ~/Library/Music, serves http://127.0.0.1:7300
+    ./target/release/katalog status    # in another terminal
 
-Build it on Linux with `make` (needs Go 1.24+), or download a binary from the
-[Releases](https://github.com/streamlinedesign/media-catalogue/releases) page once a version is tagged:
+    katalog albums radiohead
+    katalog tracks "paranoid"
+    katalog album 12
+    katalog lyrics 340
+    katalog url 340                    # http://127.0.0.1:7300/stream/340, give it to mpv
 
-    chmod +x katalog-linux-amd64 && ./katalog-linux-amd64 serve
+The daemon keeps watching the folder: a new rip or a deleted album shows up within seconds.
 
-`make dist` builds every platform into `dist/`. Pushing a tag such as `v0.1.0` makes GitHub
-build the same binaries and attach them to a release.
+### Flags
 
-## Original posters and covers
+| Flag | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `--library` | `KATALOG_LIBRARY` | `~/Library` | Root folder; music is read from `<library>/Music` |
+| `--db` | `KATALOG_DB` | `~/.local/share/katalog/katalog.db` | The SQLite file |
+| `--bind` | `KATALOG_BIND` | `127.0.0.1:7300` | HTTP address. `0.0.0.0:7300` makes it reachable from your phone |
+| `--socket` | `KATALOG_SOCKET` | `$XDG_RUNTIME_DIR/katalogd.sock` | Unix socket for local views |
+| `--no-network` | | | Never call MusicBrainz or LRCLIB |
+| `--no-lrc-files` | | | Keep fetched lyrics in the database only, do not write `.lrc` files |
+| `--scan-only` | | | Scan once, print the report, exit |
 
-    ./katalog covers -tmdb-key YOUR_TMDB_KEY
+## What the scanner reads
 
-This looks up every title and stores the image itself in the database, so the catalogue works offline afterwards.
+- Tags: title, artist, album artist, album, year, track and disc numbers, genre.
+  Missing tags fall back to the file and folder names (`01 Airbag.flac` in `OK Computer (1997)`).
+- Art: the embedded picture, then `cover.jpg`, `folder.jpg`, `front.png` and friends in the
+  album folder, then the Cover Art Archive. Each image is stored once, whatever how many
+  tracks carry it.
+- Lyrics: the embedded `LYRICS` tag, then `Track.lrc` or `Track.txt` beside the file, then
+  LRCLIB (synced when they have them). Fetched lyrics are written back as `.lrc` so they stay
+  with your music.
+- Unchanged files (same size and mtime) are skipped, so a rescan of a large library is a
+  directory walk, not a re-read.
 
-| Type        | Source |
-|-------------|--------|
-| Movies, TV  | TMDB (a v3 API key or a v4 read token) |
-| Albums      | MusicBrainz + Cover Art Archive, then the iTunes Search API as a fallback |
-| Books       | Open Library |
-| Comics      | Comic Vine with `-comicvine-key`, otherwise Open Library |
+## HTTP API
 
-Titles that already have a cover are skipped. Use `-force` to fetch again, or `-only album` to do one type.
-If a lookup picks the wrong image, set `"cover": "https://..."` on that title, import it, and run `covers -force -only <type>`.
+    GET  /api/status
+    GET  /api/artists?q=
+    GET  /api/albums?q=&artist=<id>
+    GET  /api/albums/{id}              album with its tracks
+    GET  /api/tracks?q=&album=<id>&limit=
+    GET  /api/tracks/{id}
+    GET  /api/tracks/{id}/lyrics
+    POST /api/scan
+    GET  /art/{id}                     image bytes, cached forever
+    GET  /stream/{track_id}            the audio file, with Range support (seeking works)
 
-## Add your own titles
-
-    ./katalog import my-titles.json
-
-The file is a JSON list in the same shape as `seed.json`. A title with an existing `id` is updated.
-Importing into a new database skips the sample titles: `./katalog import -db mine.db my-titles.json`.
-
-## Publish a static copy (GitHub Pages)
-
-    ./katalog export -out site
-
-This writes a plain folder with the page, the data and every cover image. Upload it anywhere.
-
-## Database
-
-| Table      | What it holds |
-|------------|---------------|
-| `items`    | One row per title: type, title, year, synopsis, `meta` and `ids` as JSON, plus `path` reserved for the file system link |
-| `creators` | Directors, artists, authors, in order |
-| `genres`   | Genres, in order |
-| `covers`   | The cover image bytes and where they came from |
-
-`GET /api/items` returns the whole catalogue as JSON.
-
-## Build from source
-
-Needs Go 1.24 or newer. The SQLite driver is pure Go, so no C compiler is needed and every platform cross-compiles:
-
-    make          # ./katalog for this machine
-    make dist     # Linux, macOS and Windows binaries in dist/
+All answers are JSON except `/art` and `/stream`. CORS is open, so a web view can talk to it directly.
 
 ## Layout
 
-    main.go      commands
-    db.go        schema, reading and writing titles
-    server.go    serve, export, import
-    covers.go    poster and cover lookups
-    seed.json    sample titles
-    web/         the page (index.html, index.css, app.js, font), built into the binary
+    crates/katalog-core   library, tags, art, lyrics (no network loop, no server)
+    crates/katalogd       the daemon: scan, watch, fetch, serve
+    crates/katalog        the command line view
+    flake.nix             dev shell, package, and a user service for NixOS or home-manager
+    web/, *.go            the earlier web catalogue, see docs/web-catalogue.md
+
+## Database
+
+| Table | Holds |
+| --- | --- |
+| `artists`, `albums`, `tracks` | The library. `tracks.path` is unique; `albums` are keyed by artist, title and folder |
+| `art` | Images, deduplicated by hash |
+| `lyrics` | One text per track, synced or plain, with its source |
+| `plays`, `track_tags`, `playlists` | Ready for the player and radio milestones |
