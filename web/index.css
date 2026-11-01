@@ -377,7 +377,7 @@ main > section,
 .cat-section[data-type="tv"]    { --bg: var(--wine);  --fg: var(--cream); }
 .cat-section[data-type="album"] { --bg: var(--red);   --fg: var(--cream); }
 .cat-section[data-type="book"]  { --bg: var(--ochre); --fg: var(--brown); }
-.cat-section[data-type="comic"] { --bg: var(--pink);  --fg: var(--wine); }
+.cat-section[data-type="comic"] { --bg: var(--navy);  --fg: var(--cream); }
 .site-footer                    { --bg: #000;         --fg: #fff; }
 
 /* intro */

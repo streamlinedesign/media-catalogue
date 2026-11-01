@@ -47,7 +47,7 @@
     ["#e84a2d", "#fffabd", "#1b395b"],
     ["#fffabd", "#050505", "#2d7a3e"],
   ];
-  const SECTION_BG = { movie: "#050505", tv: "#2d0a1e", album: "#e84a2d", book: "#d68c45", comic: "#ffb7c5" };
+  const SECTION_BG = { movie: "#050505", tv: "#2d0a1e", album: "#e84a2d", book: "#d68c45", comic: "#1b395b" };
   const MARKS = ["circle", "ring", "bar", "column", "half", "lines"];
 
   const state = {
