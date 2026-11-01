@@ -11,7 +11,7 @@
 //!   PUT  /api/tracks/{id}/lyrics      {"text": "...", "source": "lrclib"}  save by hand
 //!   POST /api/scan                    full rescan
 //!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
-//!   GET  /art/{id}                    image bytes
+//!   GET  /art/{id}?size=256           image bytes; with size, a JPEG no larger than that
 //!   GET  /stream/{track_id}           the audio file, with Range support
 //!
 //!   GET  /api/player                  state, track, position, queue ids, format
@@ -287,8 +287,32 @@ async fn fetch(
     Ok(Json(report))
 }
 
-async fn art(State(s): State<Shared>, Path(id): Path<i64>) -> Result<Response, ApiError> {
-    let (mime, data) = db::art(&s.db.lock(), id)?.ok_or_else(|| not_found("art"))?;
+#[derive(Deserialize)]
+struct ArtQuery {
+    size: Option<u32>,
+}
+
+async fn art(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    Query(q): Query<ArtQuery>,
+) -> Result<Response, ApiError> {
+    let (mime, data) = match q.size.map(|n| n.clamp(32, 1024)) {
+        None => db::art(&s.db.lock(), id)?.ok_or_else(|| not_found("art"))?,
+        Some(size) => {
+            let cached = db::art_thumb(&s.db.lock(), id, size)?;
+            if let Some(t) = cached {
+                ("image/jpeg".to_string(), t)
+            } else {
+                let (_, full) = db::art(&s.db.lock(), id)?.ok_or_else(|| not_found("art"))?;
+                let thumb = tokio::task::spawn_blocking(move || make_thumb(&full, size))
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))??;
+                db::insert_art_thumb(&s.db.lock(), id, size, &thumb)?;
+                ("image/jpeg".to_string(), thumb)
+            }
+        }
+    };
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -477,4 +501,13 @@ async fn player_jump(
 async fn settled(s: &Shared) -> PlayerStatus {
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     s.player.status()
+}
+
+/// Scales an image down so its longest side is `size`, as a JPEG.
+fn make_thumb(data: &[u8], size: u32) -> anyhow::Result<Vec<u8>> {
+    let img = image::load_from_memory(data)?;
+    let small = img.thumbnail(size, size).into_rgb8();
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 86).encode_image(&small)?;
+    Ok(out.into_inner())
 }

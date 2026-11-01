@@ -15,8 +15,16 @@
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           # The Go web catalogue is not part of this build.
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
           buildInputs = [ pkgs.alsa-lib ];
+          # The window loads these at run time (winit and wgpu dlopen them).
+          postFixup = ''
+            wrapProgram $out/bin/katalog-window \
+              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
+                libxkbcommon wayland xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr
+                vulkan-loader libGL
+              ])}
+          '';
           meta.mainProgram = "katalogd";
         };
         default = katalog;
@@ -24,7 +32,8 @@
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cargo rustc rust-analyzer clippy rustfmt pkg-config alsa-lib go ffmpeg ];
+          packages = with pkgs; [ cargo rustc rust-analyzer clippy rustfmt pkg-config alsa-lib libxkbcommon wayland xorg.libX11 vulkan-loader libGL go ffmpeg ];
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ libxkbcommon wayland xorg.libX11 vulkan-loader libGL ]);
         };
       });
 

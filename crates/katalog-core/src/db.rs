@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS art (
   source  TEXT NOT NULL                 -- embedded | folder | coverartarchive
 );
 
+CREATE TABLE IF NOT EXISTS art_thumbs (
+  art_id  INTEGER NOT NULL REFERENCES art(id) ON DELETE CASCADE,
+  size    INTEGER NOT NULL,               -- longest side in pixels
+  data    BLOB NOT NULL,                  -- JPEG
+  PRIMARY KEY (art_id, size)
+);
+
 CREATE TABLE IF NOT EXISTS lyrics (
   track_id  INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
   synced    INTEGER NOT NULL,           -- 1 when the text carries [mm:ss.xx] timestamps
@@ -343,6 +350,25 @@ pub fn art(conn: &Connection, id: i64) -> Result<Option<(String, Vec<u8>)>> {
             Ok((r.get(0)?, r.get(1)?))
         })
         .optional()?)
+}
+
+/// A cached small version of an image, if one was made before.
+pub fn art_thumb(conn: &Connection, art_id: i64, size: u32) -> Result<Option<Vec<u8>>> {
+    Ok(conn
+        .query_row(
+            "SELECT data FROM art_thumbs WHERE art_id = ?1 AND size = ?2",
+            params![art_id, size as i64],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn insert_art_thumb(conn: &Connection, art_id: i64, size: u32, data: &[u8]) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO art_thumbs (art_id, size, data) VALUES (?1, ?2, ?3)",
+        params![art_id, size as i64, data],
+    )?;
+    Ok(())
 }
 
 /// Stores an image once and returns its id. The same bytes always give the same id.

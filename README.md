@@ -32,6 +32,22 @@ The daemon keeps watching the folder: a new rip or a deleted album shows up with
 Nothing is looked up online until you ask: `katalog fetch lyrics` when the wifi is on. Pass
 `--auto-fetch` to katalogd if you want it to happen by itself after every scan.
 
+### The window
+
+    ./target/release/katalog-window     # or KATALOG_URL=http://host:7300 katalog-window
+
+One window, drawn by [iced](https://iced.rs) (no GTK, no web view), in the Kaptol design:
+Satoshi, navy and cream, headings on rules, numbers pinned to the right, a black card for what
+is playing. Albums as a grid of covers (typographic placeholders where there is no art), an
+album page with its tracks, artists, the queue, and lyrics that follow the song and jump when
+you click a line. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
+It holds no library state of its own: everything comes from katalogd, so it can run on another
+machine than the music.
+
+The window needs the usual Wayland/X11 libraries at run time (`libxkbcommon`, `wayland`,
+`libX11`, `vulkan-loader` or `libGL`), which any desktop has; the flake wraps them in.
+Without a GPU it falls back to software rendering (`ICED_BACKEND=tiny-skia` forces it).
+
 ### Playing
 
     katalog play --album 12            # replace the queue with an album and start
@@ -115,9 +131,10 @@ All answers are JSON except `/art` and `/stream`. CORS is open, so a web view ca
 
 ## Layout
 
-    crates/katalog-core   library, tags, art, lyrics (no network loop, no server)
-    crates/katalogd       the daemon: scan, watch, fetch, serve
+    crates/katalog-core   library, tags, art, lyrics (no network loop, no server, no audio)
+    crates/katalogd       the daemon: scan, watch, fetch, play, serve
     crates/katalog        the command line view
+    crates/katalog-window the desktop window (iced)
     flake.nix             dev shell, package, and a user service for NixOS or home-manager
     web/, *.go            the earlier web catalogue, see docs/web-catalogue.md
 

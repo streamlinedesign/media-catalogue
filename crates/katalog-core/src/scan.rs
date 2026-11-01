@@ -103,6 +103,7 @@ impl<'a> Scanner<'a> {
             report.removed = self.prune(dirs, &seen_paths)?;
         }
         self.remove_empty_albums()?;
+        self.attach_folder_art(dirs)?;
         db::set_meta(self.conn, "last_scan", &db::now_iso())?;
         report.seconds = started.elapsed().as_secs_f64();
         info!(
@@ -115,6 +116,36 @@ impl<'a> Scanner<'a> {
             report.seconds
         );
         Ok(report)
+    }
+
+    /// A cover.jpg dropped into a folder after its tracks were scanned: the
+    /// tracks are unchanged and skipped, so look for folder art separately for
+    /// every album under `dirs` that still has none.
+    fn attach_folder_art(&mut self, dirs: &[PathBuf]) -> Result<()> {
+        let candidates: Vec<(i64, String)> = {
+            let mut st = self.conn.prepare(
+                "SELECT al.id, MIN(t.path) FROM albums al JOIN tracks t ON t.album_id = al.id
+                 WHERE al.art_id IS NULL GROUP BY al.id",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (album_id, path) in candidates {
+            let path = Path::new(&path);
+            if !dirs.iter().any(|d| path.starts_with(d)) {
+                continue;
+            }
+            let Some(dir) = path.parent() else { continue };
+            if let Some((mime, data)) = folder_art(dir) {
+                let art_id = db::insert_art(self.conn, &mime, &data, "folder")?;
+                self.conn.execute(
+                    "UPDATE albums SET art_id = ?1, art_tried = 0 WHERE id = ?2",
+                    params![art_id, album_id],
+                )?;
+                info!("folder art for album {album_id}: {}", dir.display());
+            }
+        }
+        Ok(())
     }
 
     fn prune(&mut self, dirs: &[PathBuf], seen: &HashSet<String>) -> Result<usize> {
