@@ -17,6 +17,8 @@ pub struct Sink {
     pub device: String,
     pub bit_perfect: bool,
     can_pause: bool,
+    /// Set by `pause`; `write` lifts it, so a new track after a pause plays.
+    paused: bool,
     scratch16: Vec<i16>,
     scratch32: Vec<i32>,
 }
@@ -91,6 +93,7 @@ impl Sink {
             device: device.to_string(),
             bit_perfect,
             can_pause,
+            paused: false,
             scratch16: Vec::new(),
             scratch32: Vec::new(),
         })
@@ -98,6 +101,10 @@ impl Sink {
 
     /// Writes interleaved full-scale 32-bit samples, blocking until they fit.
     pub fn write(&mut self, samples: &[i32]) -> Result<()> {
+        if self.paused {
+            // A new track after a pause: what was buffered belongs to the old one.
+            self.flush();
+        }
         let ch = self.spec.channels as usize;
         let frames = samples.len() / ch;
         let mut written = 0usize;
@@ -134,6 +141,10 @@ impl Sink {
     }
 
     pub fn pause(&mut self) {
+        if self.paused {
+            return;
+        }
+        self.paused = true;
         if self.can_pause {
             let _ = self.pcm.pause(true);
         } else {
@@ -143,6 +154,10 @@ impl Sink {
     }
 
     pub fn resume(&mut self) {
+        if !self.paused {
+            return;
+        }
+        self.paused = false;
         if self.can_pause {
             let _ = self.pcm.pause(false);
         } else {
@@ -159,6 +174,7 @@ impl Sink {
     pub fn flush(&mut self) {
         let _ = self.pcm.drop();
         let _ = self.pcm.prepare();
+        self.paused = false;
     }
 
     /// Plays out what is buffered, then stops. For the end of the queue.

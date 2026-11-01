@@ -7,6 +7,8 @@
 //!   GET  /api/tracks?q=&album=&limit=
 //!   GET  /api/tracks/{id}
 //!   GET  /api/tracks/{id}/lyrics
+//!   GET  /api/tracks/{id}/lyrics/search?q=&artist=   LRCLIB hits to pick from
+//!   PUT  /api/tracks/{id}/lyrics      {"text": "...", "source": "lrclib"}  save by hand
 //!   POST /api/scan                    full rescan
 //!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
 //!   GET  /art/{id}                    image bytes
@@ -49,7 +51,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/albums/{id}", get(album))
         .route("/api/tracks", get(tracks))
         .route("/api/tracks/{id}", get(track))
-        .route("/api/tracks/{id}/lyrics", get(lyrics))
+        .route("/api/tracks/{id}/lyrics", get(lyrics).put(put_lyrics))
+        .route("/api/tracks/{id}/lyrics/search", get(search_lyrics))
         .route("/api/scan", post(scan))
         .route("/api/fetch", post(fetch))
         .route("/art/{id}", get(art))
@@ -173,6 +176,70 @@ async fn track(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<db::Tr
 async fn lyrics(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<db::Lyrics> {
     Ok(Json(
         db::lyrics(&s.db.lock(), id)?.ok_or_else(|| not_found("lyrics"))?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct LyricsSearch {
+    q: String,
+    artist: Option<String>,
+}
+
+/// Search hits for a track, so a view can offer "none of these fit, search again".
+async fn search_lyrics(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    Query(p): Query<LyricsSearch>,
+) -> ApiResult<Vec<katalog_core::fetch::LyricsHit>> {
+    if s.args.no_network {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "katalogd was started with --no-network".into(),
+        ));
+    }
+    {
+        let conn = s.db.lock();
+        db::track(&conn, id)?.ok_or_else(|| not_found("track"))?;
+    }
+    let fetcher = katalog_core::fetch::Fetcher::new()?;
+    let hits = fetcher
+        .search_lyrics(&p.q, p.artist.as_deref())
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("lrclib: {e:#}")))?;
+    Ok(Json(hits))
+}
+
+#[derive(Deserialize)]
+struct NewLyrics {
+    text: String,
+    #[serde(default = "manual")]
+    source: String,
+}
+fn manual() -> String {
+    "manual".into()
+}
+
+/// Saves lyrics chosen by hand, replacing any earlier ones, and writes the .lrc.
+async fn put_lyrics(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    Json(body): Json<NewLyrics>,
+) -> ApiResult<db::Lyrics> {
+    if body.text.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "empty lyrics".into()));
+    }
+    let conn = s.db.lock();
+    let track = db::track(&conn, id)?.ok_or_else(|| not_found("track"))?;
+    katalog_core::fetch::save_lyrics(
+        &conn,
+        id,
+        &track.path,
+        &body.text,
+        &body.source,
+        !s.args.no_lrc_files,
+    )?;
+    Ok(Json(
+        db::lyrics(&conn, id)?.ok_or_else(|| not_found("lyrics"))?,
     ))
 }
 

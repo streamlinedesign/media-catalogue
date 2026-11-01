@@ -22,7 +22,8 @@ on Debian and Ubuntu, or just `nix develop`.
     katalog albums radiohead
     katalog tracks "paranoid"
     katalog album 12
-    katalog lyrics 340
+    katalog lyrics 340                 # none stored? it searches LRCLIB and lets you pick or retype the search
+    katalog lyrics 340 --search "Airbag" --pick 1
     katalog url 340                    # http://127.0.0.1:7300/stream/340, give it to mpv
     katalog fetch lyrics               # look up missing lyrics now; failures are retried next time
     katalog fetch art --retry          # also look again at albums that had nothing online
@@ -94,6 +95,8 @@ has played. This is what playlists and the radio will be built on.
     GET  /api/tracks?q=&album=<id>&limit=
     GET  /api/tracks/{id}
     GET  /api/tracks/{id}/lyrics
+    GET  /api/tracks/{id}/lyrics/search?q=&artist=   LRCLIB hits with their text, to pick from
+    PUT  /api/tracks/{id}/lyrics       {"text": "...", "source": "lrclib"}  save by hand, writes the .lrc
     POST /api/scan
     POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics, answers when done
     GET  /art/{id}                     image bytes, cached forever
