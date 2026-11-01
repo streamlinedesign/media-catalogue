@@ -28,6 +28,29 @@ Needs Rust 1.85 or newer (or `nix develop`).
 
 The daemon keeps watching the folder: a new rip or a deleted album shows up within seconds.
 
+### Playing
+
+    katalog play --album 12            # replace the queue with an album and start
+    katalog play 340 341 --start 1     # specific tracks
+    katalog add --artist 3             # append everything by an artist
+    katalog now                        # track, position bar, format, the current lyric line
+    katalog toggle | pause | resume | next | prev | stop
+    katalog seek 1:30 | seek +10 | seek -10
+    katalog volume 80                  # 100 leaves the samples untouched
+    katalog queue | jump 4 | remove 4 | clear
+    katalog devices                    # what --device can be set to
+
+Playback goes straight to ALSA. With `--device auto` (the default) katalogd picks the first
+hardware output that is not HDMI and opens it as `hw:`, at the file's own sample rate and bit
+depth, with nothing in between: a 16-bit FLAC leaves as 16-bit at 44.1 kHz, a 24/96 file as
+24 bits at 96 kHz. `katalog now` says `bit-perfect` while that holds. If the card cannot do a
+rate, the `plughw:` twin converts for that file and the word disappears. Tracks follow each other
+without a gap when they share a format. The card is released when the queue ends or on `stop`,
+so other programs can use it. Use `--device default` to go through dmix or PipeWire instead.
+
+Every start is recorded in the `plays` table, and a track counts as finished once half of it
+has played. This is what playlists and the radio will be built on.
+
 ### Flags
 
 | Flag | Env | Default | Meaning |
@@ -39,6 +62,7 @@ The daemon keeps watching the folder: a new rip or a deleted album shows up with
 | `--no-network` | | | Never call MusicBrainz or LRCLIB |
 | `--no-lrc-files` | | | Keep fetched lyrics in the database only, do not write `.lrc` files |
 | `--scan-only` | | | Scan once, print the report, exit |
+| `--device` | `KATALOG_DEVICE` | `auto` | ALSA output: `auto`, `default`, `hw:1,0`, `hw:CARD=DAC` (`aplay -l` or `katalog devices`) |
 
 ## What the scanner reads
 
@@ -68,6 +92,15 @@ The daemon keeps watching the folder: a new rip or a deleted album shows up with
     POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics, answers when done
     GET  /art/{id}                     image bytes, cached forever
     GET  /stream/{track_id}            the audio file, with Range support (seeking works)
+
+    GET  /api/player                   state, track, position, queue ids, format, bit_perfect
+    GET  /api/player/queue             the queue as tracks, with the current index
+    GET  /api/player/devices           ALSA outputs
+    POST /api/player/play              {"tracks":[..]} or {"album":id} or {"artist":id}, "start":n
+    POST /api/player/queue             same body, appended
+    DELETE /api/player/queue           clear;  DELETE /api/player/queue/{index} removes one
+    POST /api/player/{pause|resume|toggle|stop|next|prev}
+    POST /api/player/seek?ms=          POST /api/player/volume?v=0..1   POST /api/player/jump?index=
 
 All answers are JSON except `/art` and `/stream`. CORS is open, so a web view can talk to it directly.
 

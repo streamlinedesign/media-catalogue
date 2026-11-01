@@ -7,8 +7,10 @@
 //!   katalogd                       scan, watch and serve on 127.0.0.1:7300
 //!   katalogd --bind 0.0.0.0:7300   also reachable from the phone
 //!   katalogd --no-network          never call MusicBrainz or LRCLIB
+//!   katalogd --device hw:1,0       play through that card, bit-perfect
 
 mod api;
+mod player;
 mod watch;
 
 use anyhow::{Context, Result};
@@ -54,6 +56,11 @@ pub struct Args {
     /// Scan once and exit, without serving.
     #[arg(long)]
     scan_only: bool,
+
+    /// ALSA output device: auto, default, or hw:1,0 / hw:CARD=DAC (see `katalog devices`).
+    /// hw: devices get the file's own rate and depth, nothing in between.
+    #[arg(long, env = "KATALOG_DEVICE", default_value = "auto")]
+    device: String,
 }
 
 fn home() -> PathBuf {
@@ -84,6 +91,7 @@ pub struct State {
     pub args: Args,
     pub scanning: std::sync::atomic::AtomicBool,
     pub fetching: std::sync::atomic::AtomicBool,
+    pub player: player::Player,
 }
 
 pub type Shared = Arc<State>;
@@ -127,8 +135,16 @@ async fn main() -> Result<()> {
         args.db.display()
     );
 
+    let device = if args.device == "auto" {
+        player::output::auto_device()
+    } else {
+        args.device.clone()
+    };
+    let player = player::Player::start(&args.db, device).context("start player")?;
+
     let state: Shared = Arc::new(State {
         db: Db::new(conn),
+        player,
         music_root: music_root.clone(),
         args: args.clone(),
         scanning: std::sync::atomic::AtomicBool::new(false),
