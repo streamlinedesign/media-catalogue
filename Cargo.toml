@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/katalog-core", "crates/katalogd", "crates/katalog"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+lofty = "0.25"
+walkdir = "2"
+notify = "8"
+blake3 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+clap = { version = "4", features = ["derive", "env"] }
+urlencoding = "2"
