@@ -50,7 +50,7 @@ func siteData(db *sql.DB) (catalogue, covers []byte, mimes map[string]string, er
 func cmdServe(args []string) error {
 	fl := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fl.String("db", "katalog.db", "SQLite database file")
-	addr := fl.String("addr", "localhost:8080", "address to listen on (use :8080 to allow other devices on your network)")
+	addr := fl.String("addr", ":"+envOr("PORT", "4180"), "address to listen on (or set PORT); production uses -addr 127.0.0.1:4180 behind Caddy")
 	fl.Parse(args)
 
 	db, err := openDB(*dbPath, true)
@@ -125,6 +125,14 @@ func cmdServe(args []string) error {
 	fmt.Printf("Katalog is running at %s  (database: %s, Ctrl+C to stop)\n", url, *dbPath)
 	srv := &http.Server{Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
 	return srv.Serve(ln)
+}
+
+// envOr returns the environment variable key, or fallback when it is unset or empty.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func logRequests(h http.Handler) http.Handler {

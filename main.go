@@ -1,6 +1,6 @@
 // Katalog: a personal media catalogue in one binary.
 //
-//	katalog serve              serve the catalogue at http://localhost:8080
+//	katalog serve              serve the catalogue at http://localhost:4180 (or $PORT)
 //	katalog covers             fetch original posters and cover art into the database
 //	katalog import items.json  add or update titles from a JSON file
 //	katalog export -out site   write a static copy (for GitHub Pages)
@@ -23,7 +23,7 @@ var seedJSON []byte
 const usageText = `Katalog: personal media catalogue
 
 Usage:
-  katalog serve   [-db katalog.db] [-addr :8080]
+  katalog serve   [-db katalog.db] [-addr :4180]
   katalog covers  [-db katalog.db] [-tmdb-key KEY] [-comicvine-key KEY] [-force] [-only TYPE]
   katalog import  [-db katalog.db] items.json
   katalog export  [-db katalog.db] [-out site]
