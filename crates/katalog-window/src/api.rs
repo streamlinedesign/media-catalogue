@@ -1,0 +1,264 @@
+//! What katalogd answers, typed, and the calls that fetch it.
+
+use serde::Deserialize;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Album {
+    pub id: i64,
+    pub title: String,
+    pub artist_id: i64,
+    pub artist: String,
+    pub year: Option<i64>,
+    pub art_id: Option<i64>,
+    pub track_count: i64,
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Artist {
+    pub id: i64,
+    pub name: String,
+    pub album_count: i64,
+    pub track_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Track {
+    pub id: i64,
+    pub title: String,
+    pub album_id: i64,
+    pub album: String,
+    pub artist: String,
+    pub disc: Option<i64>,
+    pub number: Option<i64>,
+    pub duration_ms: i64,
+    pub codec: String,
+    pub sample_rate: Option<i64>,
+    pub bit_depth: Option<i64>,
+    pub year: Option<i64>,
+    pub art_id: Option<i64>,
+    pub has_lyrics: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct AlbumWithTracks {
+    #[serde(flatten)]
+    pub album: Album,
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayState {
+    Stopped,
+    Playing,
+    Paused,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Player {
+    pub state: PlayState,
+    pub track: Option<Track>,
+    pub position_ms: u64,
+    pub duration_ms: u64,
+    pub queue: Vec<i64>,
+    pub index: Option<usize>,
+    pub volume: f32,
+    pub device: String,
+    pub format: Option<String>,
+    pub bit_perfect: bool,
+    pub error: Option<String>,
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            state: PlayState::Stopped,
+            track: None,
+            position_ms: 0,
+            duration_ms: 0,
+            queue: Vec::new(),
+            index: None,
+            volume: 1.0,
+            device: String::new(),
+            format: None,
+            bit_perfect: false,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Queue {
+    pub index: Option<usize>,
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Lyrics {
+    pub track_id: i64,
+    pub synced: bool,
+    pub text: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+pub struct Status {
+    pub version: String,
+    pub library: String,
+    pub scanning: bool,
+    pub artists: i64,
+    pub albums: i64,
+    pub tracks: i64,
+    pub duration_ms: i64,
+    pub tracks_without_lyrics: i64,
+    pub albums_without_art: i64,
+}
+
+/// One line of synced lyrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LyricLine {
+    pub at_ms: Option<u64>,
+    pub text: String,
+}
+
+impl Lyrics {
+    pub fn lines(&self) -> Vec<LyricLine> {
+        self.text
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_end();
+                if l.is_empty() {
+                    return None;
+                }
+                match parse_lrc(l) {
+                    Some((ms, text)) => {
+                        // Metadata lines like [ar:], [ti:] have no time; drop them.
+                        Some(LyricLine {
+                            at_ms: Some(ms),
+                            text: text.trim().to_string(),
+                        })
+                    }
+                    None if l.starts_with('[') && l.contains(':') && l.contains(']') => None,
+                    None => Some(LyricLine {
+                        at_ms: None,
+                        text: l.to_string(),
+                    }),
+                }
+            })
+            .collect()
+    }
+}
+
+fn parse_lrc(line: &str) -> Option<(u64, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let (stamp, text) = (&rest[..end], &rest[end + 1..]);
+    let (m, sec) = stamp.split_once(':')?;
+    let m: u64 = m.parse().ok()?;
+    let sec: f64 = sec.parse().ok()?;
+    Some((m * 60_000 + (sec * 1000.0) as u64, text))
+}
+
+#[derive(Clone)]
+pub struct Client {
+    pub base: Arc<String>,
+    http: reqwest::Client,
+}
+
+pub type ApiResult<T> = Result<T, String>;
+
+impl Client {
+    pub fn new(base: String) -> Self {
+        Self {
+            base: Arc::new(base.trim_end_matches('/').to_string()),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base, path)
+    }
+
+    pub async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        let url = self.url(path);
+        let res = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| format!("katalogd is not running at {}", self.base))?;
+        let status = res.status();
+        if !status.is_success() {
+            let body: serde_json::Value = res.json().await.unwrap_or_default();
+            return Err(body["error"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| status.to_string()));
+        }
+        res.json::<T>()
+            .await
+            .map_err(|e| format!("bad answer: {e}"))
+    }
+
+    pub async fn bytes(&self, path: &str) -> ApiResult<Vec<u8>> {
+        let url = self.url(path);
+        let res = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?;
+        Ok(res.bytes().await.map_err(|e| e.to_string())?.to_vec())
+    }
+
+    /// POST with an optional JSON body; the player answers with its status.
+    pub async fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> ApiResult<T> {
+        let url = self.url(path);
+        let mut req = self.http.post(&url);
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let res = req
+            .send()
+            .await
+            .map_err(|_| format!("katalogd is not running at {}", self.base))?;
+        let status = res.status();
+        if !status.is_success() {
+            let body: serde_json::Value = res.json().await.unwrap_or_default();
+            return Err(body["error"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| status.to_string()));
+        }
+        res.json::<T>()
+            .await
+            .map_err(|e| format!("bad answer: {e}"))
+    }
+}
+
+pub fn fmt_ms(ms: i64) -> String {
+    let secs = ms.max(0) / 1000;
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+/// "2 h 14 min" for album and library lengths.
+pub fn fmt_long(ms: i64) -> String {
+    let mins = ms.max(0) / 60_000;
+    if mins >= 60 {
+        format!("{} h {} min", mins / 60, mins % 60)
+    } else {
+        format!("{mins} min")
+    }
+}

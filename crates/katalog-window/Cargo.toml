@@ -1,0 +1,15 @@
+[package]
+name = "katalog-window"
+description = "The Katalog desktop window: the music library and player, drawn in the Kaptol design"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+iced = { version = "0.13", features = ["image", "canvas", "tokio", "advanced"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true

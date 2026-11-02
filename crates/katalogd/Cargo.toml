@@ -22,3 +22,4 @@ tower-http.workspace = true
 clap.workspace = true
 alsa.workspace = true
 symphonia.workspace = true
+image.workspace = true
