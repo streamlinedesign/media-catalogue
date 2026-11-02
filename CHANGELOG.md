@@ -4,6 +4,13 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- `katalog-window`: the desktop window (iced, no toolkit): album grid, artists,
+  queue, synced lyrics, a now-playing card with transport and seek, keyboard
+  shortcuts.
+- Window fixes: covers are cropped square on the server (`/art/{id}?crop=1`)
+  so no cover draws over its neighbours; the search box understands decades
+  and ranges ("197", "70s", "1975-1980"); an album page goes back with the
+  Albums tab, Backspace, the mouse back button or the "All albums" chip.
 - House conventions: `CLAUDE.md`, `VERSION`, `TODO.md`, `.env.example`, CI and
   auto-PR workflows, the shared Makefile targets; the Go catalogue listens on
   `PORT` (4180) instead of 8080.

@@ -250,7 +250,7 @@ impl App {
         self.art_loading.insert(key);
         let c = self.client.clone();
         Task::perform(
-            async move { c.bytes(&format!("/art/{art_id}?size={size}")).await },
+            async move { c.bytes(&format!("/art/{art_id}?size={size}&crop=1")).await },
             move |r| Message::Art(art_id, size, r),
         )
     }
@@ -277,7 +277,7 @@ impl App {
                 q.is_empty()
                     || a.title.to_lowercase().contains(&q)
                     || a.artist.to_lowercase().contains(&q)
-                    || a.year.map(|y| y.to_string() == q).unwrap_or(false)
+                    || a.year.map(|y| year_matches(y, &q)).unwrap_or(false)
             })
             .collect()
     }
@@ -471,6 +471,10 @@ impl App {
                 ])
             }
             Message::Tab(t) => {
+                if t == Tab::Albums && self.tab == Tab::Albums && self.view != View::Grid {
+                    // Already on Albums, looking at one album: the tab is the way back.
+                    self.view = View::Grid;
+                }
                 self.tab = t;
                 if t == Tab::Queue {
                     return self.load_queue();
@@ -594,6 +598,10 @@ impl App {
                 iced::Event::Window(window::Event::Resized(size)) => {
                     Some(Message::Resized(size.width, size.height))
                 }
+                // The thumb button on a mouse, like in a browser.
+                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                    iced::mouse::Button::Back,
+                )) => Some(Message::Back),
                 _ => None,
             }),
             keyboard::on_key_press(|key, modifiers| {
@@ -602,7 +610,7 @@ impl App {
                 }
                 match key.as_ref() {
                     Key::Named(Named::Space) => Some(Message::Toggle),
-                    Key::Named(Named::Escape) => Some(Message::Back),
+                    Key::Named(Named::Escape) | Key::Named(Named::Backspace) => Some(Message::Back),
                     Key::Character("n") => Some(Message::Next),
                     Key::Character("p") => Some(Message::Prev),
                     _ => None,
@@ -808,11 +816,12 @@ impl App {
         seed: i64,
     ) -> Element<'a, Message> {
         if let Some(h) = art_id.and_then(|id| self.art.get(&(id, size))) {
+            // The thumbnail is already square, so nothing can spill over the neighbours.
             return container(
                 image(h.clone())
                     .width(Length::Fixed(side))
                     .height(Length::Fixed(side))
-                    .content_fit(iced::ContentFit::Cover),
+                    .content_fit(iced::ContentFit::Contain),
             )
             .width(Length::Fixed(side))
             .height(Length::Fixed(side))
@@ -963,6 +972,11 @@ impl App {
             .align_y(Alignment::End),
         ];
         let actions = row![
+            button(text("All albums").size(15))
+                .style(style::chip)
+                .padding([6, 12])
+                .on_press(Message::Back),
+            Space::with_width(24),
             button(text("Play").size(15))
                 .style(style::chip)
                 .padding([6, 12])
@@ -973,10 +987,6 @@ impl App {
                 .padding([6, 12])
                 .on_press(Message::AddAlbum(a.id)),
             horizontal_space(),
-            button(text("Back").size(15))
-                .style(style::chip)
-                .padding([6, 12])
-                .on_press(Message::Back),
         ];
         let right = column![
             title,
@@ -1222,7 +1232,7 @@ impl App {
                 image(h.clone())
                     .width(Length::Fixed(side))
                     .height(Length::Fixed(side))
-                    .content_fit(iced::ContentFit::Cover),
+                    .content_fit(iced::ContentFit::Contain),
             )
             .style(style::outlined(CARD_LINE))
             .into(),
@@ -1372,3 +1382,43 @@ impl App {
 }
 
 const LYRIC_LINE_H: f32 = 46.0;
+
+/// "1977" is that year, "197" the whole decade, "70s" and "1970s" too,
+/// "1975-1980" a range.
+fn year_matches(year: i64, q: &str) -> bool {
+    let y = year.to_string();
+    if let Some((a, b)) = q.split_once('-') {
+        if let (Ok(a), Ok(b)) = (a.trim().parse::<i64>(), b.trim().parse::<i64>()) {
+            return (a.min(b)..=a.max(b)).contains(&year);
+        }
+    }
+    if let Some(d) = q
+        .strip_suffix('s')
+        .filter(|d| d.chars().all(|c| c.is_ascii_digit()))
+    {
+        return match d.len() {
+            2 => y.len() == 4 && y[2..3] == d[..1],
+            4 => y.starts_with(&d[..3]),
+            _ => false,
+        };
+    }
+    !q.is_empty() && q.chars().all(|c| c.is_ascii_digit()) && y.starts_with(q)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::year_matches;
+
+    #[test]
+    fn years_match_decades_and_ranges() {
+        assert!(year_matches(1977, "1977"));
+        assert!(year_matches(1977, "197"));
+        assert!(!year_matches(1987, "197"));
+        assert!(year_matches(1977, "70s"));
+        assert!(year_matches(1977, "1970s"));
+        assert!(!year_matches(1967, "70s"));
+        assert!(year_matches(1977, "1975-1980"));
+        assert!(!year_matches(1981, "1975-1980"));
+        assert!(!year_matches(1977, "ok"));
+    }
+}
