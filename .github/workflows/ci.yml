@@ -1,13 +1,10 @@
 name: ci
 
-# Runs on every push to a branch and on every pull request, so a PR opened by
-# a workflow (which can't trigger other workflows) still gets a check on its
-# commits. Branch protection on main requires the "ci" check.
+# Runs once per push to any branch but main; the check is attached to the
+# commit, so the pull request shows it.
 on:
   push:
     branches-ignore: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:

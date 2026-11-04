@@ -1,23 +1,25 @@
 name: auto-pr
 
-# Every push to a claude/* or feat/* branch opens a pull request against main
-# (if one isn't open yet) and arms auto-merge: once the "ci" check passes and
-# main's rules are met, the PR squash-merges and the branch is deleted.
-# Add the label "hold" to a PR to disarm it; remove the label to re-arm.
+# Pushing a claude/* or feat/* branch opens a pull request to main; when the
+# "ci" workflow passes on that branch, the PR is squash-merged and the branch
+# deleted. Needs no repository settings: this workflow does the merge itself.
+# Add the label "hold" to a PR to keep it open; remove the label and push
+# (or re-run ci) to let it merge.
 #
-# Needs, once per repo (make configure-repo does it):
-#   - Settings > General > "Allow auto-merge"
-#   - Settings > Actions > "Allow GitHub Actions to create and approve pull requests"
-#   - a branch protection rule on main requiring the "ci" status check
+# If "Allow GitHub Actions to create pull requests" is off in the repo's
+# Actions settings, the open step prints a note instead of failing; open the
+# PR by hand and the merge step still handles it.
 on:
   push:
     branches: ['claude/**', 'feat/**']
-  pull_request:
-    types: [labeled, unlabeled]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
+  actions: read
 
 jobs:
   open:
@@ -27,33 +29,33 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - name: Open the PR if there isn't one
         run: |
           branch="${GITHUB_REF#refs/heads/}"
           n=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
-          if [ -z "$n" ]; then
-            title=$(git log -1 --pretty=%s)
-            body=$(git log --reverse --pretty='- %s' origin/main..HEAD 2>/dev/null || git log -1 --pretty='- %s')
-            gh pr create --base main --head "$branch" --title "$title" --body "$body"
-            n=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          if [ -n "$n" ]; then echo "PR #$n already open"; exit 0; fi
+          title=$(git log -1 --pretty=%s)
+          body=$(git log --reverse --pretty='- %s' origin/main..HEAD 2>/dev/null || git log -1 --pretty='- %s')
+          if gh pr create --base main --head "$branch" --title "$title" --body "$body"; then
+            echo "opened"
+          else
+            echo "::notice::Could not open a PR (Actions may not create PRs in this repo yet). Open it by hand; it will still merge when ci passes."
           fi
-          echo "pr=$n" >> "$GITHUB_ENV"
-      - name: Arm auto-merge unless held
-        run: |
-          if gh pr view "$pr" --json labels --jq '.labels[].name' | grep -qx hold; then
-            echo "held"; exit 0; fi
-          gh pr merge "$pr" --auto --squash --delete-branch
 
-  hold:
-    if: github.event_name == 'pull_request' && github.event.label.name == 'hold'
+  merge:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
-      - name: Disarm or re-arm
+      - name: Merge the PR for this branch when it is green and not held
         run: |
-          if [ "${{ github.event.action }}" = labeled ]; then
-            gh pr merge "${{ github.event.number }}" --disable-auto || true
-          else
-            gh pr merge "${{ github.event.number }}" --auto --squash --delete-branch || true
-          fi
+          case "$BRANCH" in claude/*|feat/*) ;; *) echo "not an auto branch"; exit 0;; esac
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number,headRefOid,labels,isDraft \
+                --jq '.[0] | select(.headRefOid == env.SHA and .isDraft == false and ([.labels[].name] | index("hold") | not)) | .number')
+          if [ -z "$n" ]; then echo "no open, unheld PR at this commit"; exit 0; fi
+          gh pr merge "$n" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+          echo "merged #$n"
