@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Films and TV: katalogd scans `Movies/` and `TV-Shows/` beside `Music/`,
+  reading titles, years and S01E02 from the names, lengths and subtitle
+  languages from ffprobe, subtitle files and folder posters. With
+  `TMDB_KEY` set, `katalog fetch video` adds plots, dates, genres and
+  posters. The window has a Movies tab on black and a TV tab on wine.
+  `katalog movies`, `shows`, `show`; `/api/movies`, `/api/shows`.
 - A playlist can be taken off the radio dial: the "On the dial" chip on
   its page, `katalog playlist-station <name> on|off`, or
   `PUT /api/playlists/{id}` with `{"station": false}`. Playlists from

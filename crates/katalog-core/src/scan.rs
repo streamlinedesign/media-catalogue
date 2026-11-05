@@ -25,6 +25,9 @@ pub struct ScanReport {
     pub removed: usize,
     pub unreadable: usize,
     pub seconds: f64,
+    /// Films and TV, when they were scanned too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<crate::video::VideoReport>,
 }
 
 pub struct Scanner<'a> {

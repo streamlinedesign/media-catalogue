@@ -1,4 +1,4 @@
-//! Watches the music folder. A new rip, a retag or a deleted album is picked up
+//! Watches the music, film and TV folders. A new rip, a retag or a deleted album is picked up
 //! a couple of seconds after it happens, by rescanning just the folders touched.
 
 use crate::Shared;
@@ -41,6 +41,15 @@ pub fn start(state: Shared) {
         return;
     }
     info!("watching {}", root.display());
+    for dir in ["Movies", "TV-Shows"] {
+        let d = state.args.library.join(dir);
+        if d.is_dir() {
+            match watcher.watch(&d, RecursiveMode::Recursive) {
+                Ok(()) => info!("watching {}", d.display()),
+                Err(e) => warn!("could not watch {}: {e}", d.display()),
+            }
+        }
+    }
 
     tokio::spawn(async move {
         let _keep = watcher; // dropped when the task ends
