@@ -643,3 +643,176 @@ fn days_ago_iso(days: i64) -> String {
         - days.max(0) * 86_400;
     iso_from_secs(secs.max(0) as u64)
 }
+
+// ---- picks -------------------------------------------------------------
+
+/// One album on the Home shelf, and why it is there.
+#[derive(Debug, Clone, Serialize)]
+pub struct Pick {
+    #[serde(flatten)]
+    pub album: Album,
+    /// "same genre", "same artist", "wildcard" or "same century".
+    pub why: String,
+}
+
+/// The genre most of an album's tracks carry.
+pub fn album_genre(conn: &Connection, album_id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT genre FROM tracks WHERE album_id = ?1 AND genre IS NOT NULL AND genre <> ''
+             GROUP BY genre ORDER BY COUNT(*) DESC, genre LIMIT 1",
+            [album_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Up to four albums to go with `album_id`, each different and none of them
+/// that album: one of the same genre by someone else, another by the same
+/// artist (or a second of the genre when there is none), one at random, and
+/// one from the same century. A rule that finds nothing is left out.
+pub fn picks(conn: &Connection, album_id: i64) -> Result<Vec<Pick>> {
+    let Some(base) = album(conn, album_id)? else {
+        return Ok(Vec::new());
+    };
+    let genre = album_genre(conn, album_id)?;
+    let mut taken = vec![album_id];
+    let mut out = Vec::new();
+
+    fn pick(
+        conn: &Connection,
+        cond: &str,
+        args: &[&dyn rusqlite::ToSql],
+        why: &str,
+        taken: &mut Vec<i64>,
+        out: &mut Vec<Pick>,
+    ) -> Result<bool> {
+        let not_in = taken
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "{ALBUM_SQL} WHERE al.id NOT IN ({not_in}) AND ({cond}) ORDER BY random() LIMIT 1"
+        );
+        let found = conn.query_row(&sql, args, album_from_row).optional()?;
+        Ok(match found {
+            Some(a) => {
+                taken.push(a.id);
+                out.push(Pick {
+                    album: a,
+                    why: why.to_string(),
+                });
+                true
+            }
+            None => false,
+        })
+    }
+    const GENRE: &str = "al.id IN (SELECT album_id FROM tracks WHERE genre = ?1)";
+
+    if let Some(g) = &genre {
+        let other = format!("{GENRE} AND al.artist_id <> ?2");
+        if !pick(
+            conn,
+            &other,
+            &[g, &base.artist_id],
+            "same genre",
+            &mut taken,
+            &mut out,
+        )? {
+            pick(conn, GENRE, &[g], "same genre", &mut taken, &mut out)?;
+        }
+    }
+    if !pick(
+        conn,
+        "al.artist_id = ?1",
+        &[&base.artist_id],
+        "same artist",
+        &mut taken,
+        &mut out,
+    )? {
+        if let Some(g) = &genre {
+            pick(conn, GENRE, &[g], "same genre", &mut taken, &mut out)?;
+        }
+    }
+    // The century goes before the wildcard so the wildcard cannot take the
+    // only album that fits it; the shelf still shows the wildcard third.
+    if let Some(y) = base.year {
+        pick(
+            conn,
+            "al.year IS NOT NULL AND al.year / 100 = ?1 / 100",
+            &[&y],
+            "same century",
+            &mut taken,
+            &mut out,
+        )?;
+    }
+    let century = out.iter().position(|p| p.why == "same century");
+    pick(conn, "1", &[], "wildcard", &mut taken, &mut out)?;
+    if let (Some(c), Some(w)) = (century, out.iter().position(|p| p.why == "wildcard")) {
+        out.swap(c, w);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library(tag: &str) -> (Connection, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("katalog-picks-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let conn = open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists (id, name, sort_name) VALUES (1, 'Azra', 'Azra'), (2, 'Joy Division', 'Joy Division'), (3, 'Radiohead', 'Radiohead');
+             INSERT INTO albums (id, artist_id, title, year, dir) VALUES
+               (1, 1, 'Sunčana strana ulice', 1981, 'a'), (2, 1, 'Filigranski pločnici', 1982, 'b'),
+               (3, 2, 'Closer', 1980, 'c'), (4, 3, 'Kid A', 2000, 'd'), (5, 3, 'OK Computer', 1997, 'e');",
+        )
+        .unwrap();
+        for (id, album, artist, genre) in [
+            (1, 1, 1, "New Wave"),
+            (2, 2, 1, "New Wave"),
+            (3, 3, 2, "New Wave"),
+            (4, 4, 3, "Electronic"),
+            (5, 5, 3, "Rock"),
+        ] {
+            conn.execute(
+                "INSERT INTO tracks (id, album_id, artist_id, title, path, size, mtime, codec, genre) VALUES (?1, ?2, ?3, 't', ?4, 0, 0, 'flac', ?5)",
+                params![id, album, artist, format!("/{id}.flac"), genre],
+            )
+            .unwrap();
+        }
+        (conn, path)
+    }
+
+    #[test]
+    fn picks_follow_the_rules() {
+        let (conn, path) = library("rules");
+        let p = picks(&conn, 1).unwrap();
+        let why: Vec<&str> = p.iter().map(|p| p.why.as_str()).collect();
+        assert_eq!(
+            why,
+            ["same genre", "same artist", "wildcard", "same century"]
+        );
+        assert_eq!(p[0].album.id, 3, "same genre by someone else");
+        assert_eq!(p[1].album.id, 2, "the other Azra album");
+        let ids: std::collections::HashSet<i64> = p.iter().map(|p| p.album.id).collect();
+        assert_eq!(ids.len(), 4);
+        assert!(!ids.contains(&1));
+        assert_eq!(p[3].album.year.unwrap() / 100, 19);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn no_other_album_by_the_artist_falls_back_to_the_genre() {
+        let (conn, path) = library("fallback");
+        conn.execute("UPDATE tracks SET genre = 'Rock' WHERE id = 4", [])
+            .unwrap();
+        let p = picks(&conn, 3).unwrap();
+        assert_eq!(p[0].why, "same genre");
+        assert_eq!(p[1].why, "same genre");
+        let _ = std::fs::remove_file(path);
+    }
+}

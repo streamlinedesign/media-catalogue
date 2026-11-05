@@ -17,12 +17,17 @@
 - Radio: a rest period and keep-count you can set; stations from tags once
   `track_tags` is in use
 
+- Stations that run all the time on a schedule, so tuning in joins mid-song
+- A stream address per station for mpv, VLC or a phone on the network
+- A CRT overlay for the window (scanlines, vignette; curvature on the GPU)
+
 ## Later
 
 - Movies, comics and books in the same window
 
 ## Done
 
+- 0.4.0: the Home tab, the spectrum feed, album picks
 - 0.3.0: playlists, the radio, the loop guard, add-to-playlist on every song
 - 0.2.0: the desktop window, cropped covers, decade search, a way back from an album
 - 0.1.0: katalogd, the katalog command line, the Nix flake, the Go catalogue

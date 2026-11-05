@@ -62,6 +62,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/artists", get(artists))
         .route("/api/albums", get(albums))
         .route("/api/albums/{id}", get(album))
+        .route("/api/albums/{id}/picks", get(album_picks))
         .route("/api/tracks", get(tracks))
         .route("/api/tracks/{id}", get(track))
         .route("/api/tracks/{id}/lyrics", get(lyrics).put(put_lyrics))
@@ -84,6 +85,7 @@ pub fn router(state: Shared) -> Router {
         .route("/stream/{id}", get(stream))
         .route("/api/player", get(player_status))
         .route("/api/player/devices", get(player_devices))
+        .route("/api/player/levels", get(player_levels))
         .route("/api/player/play", post(player_play))
         .route(
             "/api/player/queue",
@@ -167,6 +169,11 @@ async fn artists(
 
 async fn albums(State(s): State<Shared>, Query(p): Query<ListQuery>) -> ApiResult<Vec<db::Album>> {
     Ok(Json(db::albums(&s.db.lock(), q(&p.q), p.artist)?))
+}
+
+/// Four albums to go with this one, each with the rule that picked it.
+async fn album_picks(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<Vec<db::Pick>> {
+    Ok(Json(db::picks(&s.db.lock(), id)?))
 }
 
 #[derive(Serialize)]
@@ -390,6 +397,11 @@ async fn stream(
 
 async fn player_status(State(s): State<Shared>) -> Json<PlayerStatus> {
     Json(s.player.status())
+}
+
+/// The spectrum as it sounds now: `{"bands": [0.0..1.0, ...]}`, low to high.
+async fn player_levels(State(s): State<Shared>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "bands": s.player.levels() }))
 }
 
 async fn player_devices(State(_s): State<Shared>) -> Json<Vec<crate::player::output::Device>> {

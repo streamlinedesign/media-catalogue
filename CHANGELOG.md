@@ -4,6 +4,16 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Window: a Home tab, the new first screen, after the Spectra-69 "Minimal"
+  design: green on black in IBM Plex Mono, the cover tinted to the screen,
+  a plain spectrum, time and keys, up next / playlists / for you, five lines
+  of lyrics, and a receiver whose stations are the playlists (tuning and
+  power drive the radio).
+- katalogd: `GET /api/player/levels`, a 32-band spectrum of what is heard
+  right now (computed on the way to the card, released after the card's
+  delay so it keeps time with the sound).
+- katalogd: `GET /api/albums/{id}/picks`, four albums to go with one: same
+  genre, same artist (or another of the genre), a wildcard, same century.
 - Window: volume − and + in the now-playing bar, and the `-` and `+` keys,
   in steps of five; at 100 playback is bit-perfect again.
 - Window: when the playing track has no lyrics, the Lyrics tab searches
