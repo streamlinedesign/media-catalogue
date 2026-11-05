@@ -15,8 +15,8 @@ mod icons;
 mod style;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, Pick,
-    PlayState, Player, Playlist, PlaylistWithTracks, Queue, Status, Track,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, OnAir,
+    Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue, Status, Track,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -139,6 +139,7 @@ struct App {
     art_green_loading: HashSet<i64>,
     side: home::Side,
     tuned: usize,
+    on_air: Vec<OnAir>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +200,7 @@ enum Message {
     DebugNoLyrics,
     Shot(window::Screenshot),
     LevelsTick,
+    OnAir(Result<Vec<OnAir>, String>),
     Levels(Result<Levels, String>),
     Picks(i64, Result<Vec<Pick>, String>),
     QueueAlbum(i64),
@@ -257,6 +259,7 @@ impl App {
             art_green_loading: HashSet::new(),
             side: home::Side::Next,
             tuned: 0,
+            on_air: Vec::new(),
         };
         let mut tasks = vec![
             app.load_status(),
@@ -405,6 +408,10 @@ impl App {
             move |r| Message::ArtGreen(art_id, r),
         )
     }
+    fn load_on_air(&self) -> Task<Message> {
+        let c = self.client.clone();
+        Task::perform(async move { c.get("/api/stations").await }, Message::OnAir)
+    }
     fn load_picks(&mut self, album_id: i64) -> Task<Message> {
         self.picks_for = Some(album_id);
         self.queued_albums.clear();
@@ -497,6 +504,9 @@ impl App {
                     tasks.push(self.load_playlists());
                 }
                 tasks.push(self.load_visible_art());
+                if self.tab == Tab::Home && self.ticks % 4 == 1 {
+                    tasks.push(self.load_on_air());
+                }
                 if self.ticks == 10 && self.screenshot.is_some() {
                     tasks.push(
                         window::get_latest()
@@ -1087,6 +1097,11 @@ impl App {
                 Task::none()
             }
             Message::Levels(Err(_)) => Task::none(),
+            Message::OnAir(Ok(a)) => {
+                self.on_air = a;
+                Task::none()
+            }
+            Message::OnAir(Err(_)) => Task::none(),
             Message::Picks(album, Ok(p)) => {
                 if self.picks_for == Some(album) {
                     self.picks = p;
@@ -1125,9 +1140,9 @@ impl App {
                 self.tuned = (self.tuned as i32 + by).rem_euclid(n) as usize;
                 if self.player.radio.is_some() {
                     let pl = stations[self.tuned].playlist;
-                    return Task::done(Message::RadioOn(pl));
+                    return Task::batch([Task::done(Message::RadioOn(pl)), self.load_on_air()]);
                 }
-                Task::none()
+                self.load_on_air()
             }
             Message::Power => {
                 if self.player.radio.is_some() {

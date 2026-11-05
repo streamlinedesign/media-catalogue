@@ -16,6 +16,7 @@ pub mod output;
 use anyhow::{Context, Result};
 use decode::Decoder;
 use katalog_core::db::{self, Track};
+use katalog_core::stations;
 use output::Sink;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -84,10 +85,7 @@ impl Source {
 
 /// How many times in a row one track may play before the guard moves on.
 pub const LOOP_LIMIT: u32 = 3;
-/// Days a track rests after a play before the radio picks it again.
-pub const RADIO_REST_DAYS: i64 = 3;
-/// How many recent radio tracks are kept in the queue and never picked again
-/// right away.
+/// How many heard radio tracks stay in the queue.
 const RADIO_KEEP: usize = 50;
 
 #[derive(Debug)]
@@ -198,6 +196,8 @@ struct Engine {
     streak: u32,
     notice: Option<String>,
     meter: levels::Meter,
+    /// Radio: where the last queued slot of the station ends, Unix ms.
+    on_air_until: i64,
 }
 
 struct Current {
@@ -235,6 +235,7 @@ impl Engine {
             streak: 0,
             notice: None,
             meter,
+            on_air_until: 0,
         }
     }
 
@@ -295,20 +296,7 @@ impl Engine {
                 self.finish_current(false);
                 self.radio = Some(radio);
                 self.source = Source::Radio;
-                self.queue.clear();
-                self.index = None;
-                self.paused = false;
-                match self.radio_pick(None) {
-                    Some(id) => {
-                        self.queue.push(id);
-                        self.start_index(0)?;
-                    }
-                    None => {
-                        self.radio = None;
-                        self.close_sink();
-                        anyhow::bail!("the radio found nothing to play");
-                    }
-                }
+                self.tune_in()?;
             }
             Cmd::RadioOff => {
                 if self.radio.take().is_some() {
@@ -365,7 +353,10 @@ impl Engine {
                 self.close_sink();
             }
             Cmd::Pause => self.set_paused(true),
+            // The radio does not wait: coming back from a pause joins it live.
+            Cmd::Resume if self.radio.is_some() && self.paused => self.tune_in()?,
             Cmd::Resume => self.set_paused(false),
+            Cmd::Toggle if self.radio.is_some() && self.paused => self.tune_in()?,
             Cmd::Toggle => {
                 if self.current.is_some() {
                     let p = !self.paused;
@@ -430,17 +421,17 @@ impl Engine {
     fn start_index(&mut self, i: usize) -> Result<()> {
         let id = self.queue[i];
         if !self.count_start(Some(id)) {
-            // The guard says no. In radio, swap the track for a fresh pick;
-            // in a queue, step past it, or stop at the end.
+            // The guard says no. In radio, take the station's next slot
+            // instead (a one-song station stops); in a queue, step past it,
+            // or stop at the end.
             if self.radio.is_some() {
-                let avoid = self.queue.clone();
-                match self.radio_pick(Some(&avoid)) {
-                    Some(fresh) => {
+                match self.next_slot() {
+                    Some(fresh) if fresh != id => {
                         self.queue[i] = fresh;
                         self.last_started = None;
                         return self.start_index(i);
                     }
-                    None => {
+                    _ => {
                         self.close_sink();
                         self.index = None;
                         return Ok(());
@@ -479,8 +470,50 @@ impl Engine {
         Ok(())
     }
 
-    /// Radio: keep one track waiting after the current one, and let go of
-    /// what was heard long ago so the queue does not grow for ever.
+    /// Radio: join the station where it is now, part way into a song.
+    fn tune_in(&mut self) -> Result<()> {
+        let Some(radio) = self.radio.clone() else {
+            return Ok(());
+        };
+        let entries = stations::entries(&self.conn, radio.playlist)?;
+        let now = stations::now_ms();
+        let Some(slot) = stations::slot_at(&entries, radio.playlist.unwrap_or(0), now) else {
+            self.radio = None;
+            self.close_sink();
+            anyhow::bail!("{} has nothing to play", radio.name);
+        };
+        self.finish_current(false);
+        self.queue = vec![slot.track_id];
+        self.index = None;
+        self.paused = false;
+        self.on_air_until = slot.end_ms();
+        self.last_started = None;
+        self.start_index(0)?;
+        // Into the song by as much as the station is.
+        let into = (now - slot.start_ms).max(0) as u64;
+        if into > 1000 {
+            self.seek(into)?;
+        }
+        Ok(())
+    }
+
+    /// Radio: the slot after the last one queued, and move past it.
+    fn next_slot(&mut self) -> Option<i64> {
+        let radio = self.radio.as_ref()?;
+        let entries = match stations::entries(&self.conn, radio.playlist) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("radio: {e:#}");
+                return None;
+            }
+        };
+        let slot = stations::slot_at(&entries, radio.playlist.unwrap_or(0), self.on_air_until)?;
+        self.on_air_until = slot.end_ms();
+        Some(slot.track_id)
+    }
+
+    /// Radio: keep the station's next song waiting after the current one,
+    /// and let go of what was heard long ago so the queue does not grow for ever.
     fn top_up(&mut self) {
         if self.radio.is_none() {
             return;
@@ -495,39 +528,9 @@ impl Engine {
         if i + 1 < self.queue.len() {
             return;
         }
-        let avoid = self.queue.clone();
-        if let Some(id) = self.radio_pick(Some(&avoid)) {
+        if let Some(id) = self.next_slot() {
             self.queue.push(id);
         }
-    }
-
-    /// One pick for the radio: rested, not among the last tracks of the
-    /// queue (or `avoid`), and not by the artist playing now when it can be
-    /// helped. A small pool is allowed to come round again.
-    fn radio_pick(&self, avoid: Option<&[i64]>) -> Option<i64> {
-        let radio = self.radio.as_ref()?;
-        let queue = self.queue.clone();
-        let avoid = avoid.unwrap_or(&queue);
-        let recent = &avoid[avoid.len().saturating_sub(RADIO_KEEP)..];
-        let last_artist = self.current.as_ref().map(|c| c.track.artist_id);
-        let current: Vec<i64> = self.current.iter().map(|c| c.track.id).collect();
-        for avoid in [recent, &current[..]] {
-            match db::radio_pick(
-                &self.conn,
-                radio.playlist,
-                RADIO_REST_DAYS,
-                avoid,
-                last_artist,
-            ) {
-                Ok(Some(pick)) => return Some(pick),
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!("radio: {e:#}");
-                    return None;
-                }
-            }
-        }
-        None
     }
 
     /// Moves by `by` in the queue. Past the end: stop and release the card.

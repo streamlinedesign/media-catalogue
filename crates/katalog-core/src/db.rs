@@ -584,66 +584,6 @@ pub fn playlists_of_track(conn: &Connection, track_id: i64) -> Result<Vec<i64>> 
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-// ---- radio -------------------------------------------------------------
-
-/// Picks one track for the radio: at random from `playlist` (or the whole
-/// library), not played in the last `rest_days`, not in `avoid`, and by a
-/// different artist than `last_artist` when there is a choice. When the rest
-/// rule leaves nothing, it is relaxed, then the artist rule, so the radio
-/// never falls silent while there is music.
-pub fn radio_pick(
-    conn: &Connection,
-    playlist: Option<i64>,
-    rest_days: i64,
-    avoid: &[i64],
-    last_artist: Option<i64>,
-) -> Result<Option<i64>> {
-    let avoid_list = avoid
-        .iter()
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let avoid_sql = if avoid_list.is_empty() {
-        String::new()
-    } else {
-        format!(" AND t.id NOT IN ({avoid_list})")
-    };
-    let pool_sql = match playlist {
-        Some(_) => " AND t.id IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1)",
-        None => " AND ?1 IS NULL",
-    };
-    let sql = format!(
-        "SELECT t.id FROM tracks t WHERE t.duration_ms > 0{pool_sql}{avoid_sql}
-           AND t.id NOT IN (SELECT track_id FROM plays WHERE started_at > ?2)
-           AND (?3 IS NULL OR t.artist_id != ?3)
-         ORDER BY RANDOM() LIMIT 1"
-    );
-    let since = days_ago_iso(rest_days);
-    // Nothing was started after the year 9999: the rest rule switched off.
-    let never = "9999".to_string();
-    for (rest, artist) in [(true, true), (true, false), (false, true), (false, false)] {
-        let since = if rest { &since } else { &never };
-        let artist = if artist { last_artist } else { None };
-        let pick: Option<i64> = conn
-            .query_row(&sql, params![playlist, since, artist], |r| r.get(0))
-            .optional()?;
-        if pick.is_some() {
-            return Ok(pick);
-        }
-    }
-    Ok(None)
-}
-
-/// `now_iso` moved back by `days`.
-fn days_ago_iso(days: i64) -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-        - days.max(0) * 86_400;
-    iso_from_secs(secs.max(0) as u64)
-}
-
 // ---- picks -------------------------------------------------------------
 
 /// One album on the Home shelf, and why it is there.

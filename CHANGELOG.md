@@ -4,6 +4,14 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Stations: every playlist, and the whole library, is a station that is
+  always on. A station is a schedule (a shuffled order that changes every
+  time round, the same artist kept apart, laid end to end from a fixed
+  start), so tuning in joins the song that is playing part way through, and
+  nothing runs until someone listens. The radio now plays stations: this
+  replaces the random picks with a three-day rest.
+- `katalog stations` and `GET /api/stations`: what is on every station now.
+- Window: the receiver on Home shows what is on the tuned station, on or off.
 - Window: a Home tab, the new first screen, after the Spectra-69 "Minimal"
   design: green on black in IBM Plex Mono, the cover tinted to the screen,
   a plain spectrum, time and keys, up next / playlists / for you, five lines

@@ -594,6 +594,17 @@ impl App {
         .padding([4, 0])
         .on_press(Message::Power);
 
+        // What the station is playing right now, tuned in or not.
+        let on_now = match self
+            .on_air
+            .iter()
+            .find(|a| a.playlist == st.playlist)
+            .and_then(|a| a.now.as_ref())
+        {
+            Some(p) => format!("on air · {} · {}", p.artist, p.title),
+            None if self.on_air.is_empty() => String::new(),
+            None => "silent: nothing on this station yet".into(),
+        };
         let marks: Vec<f32> = stations.iter().map(|s| s.mhz).collect();
         let dial = Canvas::new(Dial {
             marks,
@@ -621,6 +632,7 @@ impl App {
                 mono("MHz", 12.0, DIM),
             ]
             .align_y(Alignment::End),
+            mono(on_now, 12.0, G).wrapping(text::Wrapping::None),
             mono(
                 format!(
                     "{} tracks · station {} of {}",

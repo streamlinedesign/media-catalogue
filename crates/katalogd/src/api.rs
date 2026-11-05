@@ -79,6 +79,7 @@ pub fn router(state: Shared) -> Router {
             delete(playlist_remove),
         )
         .route("/api/radio", post(radio_on).delete(radio_off))
+        .route("/api/stations", get(stations))
         .route("/api/scan", post(scan))
         .route("/api/fetch", post(fetch))
         .route("/art/{id}", get(art))
@@ -397,6 +398,12 @@ async fn stream(
 
 async fn player_status(State(s): State<Shared>) -> Json<PlayerStatus> {
     Json(s.player.status())
+}
+
+/// Every station, the library first, with what is on now and next.
+async fn stations(State(s): State<Shared>) -> ApiResult<Vec<katalog_core::stations::OnAir>> {
+    let now = katalog_core::stations::now_ms();
+    Ok(Json(katalog_core::stations::on_air(&s.db.lock(), now)?))
 }
 
 /// The spectrum as it sounds now: `{"bands": [0.0..1.0, ...]}`, low to high.
