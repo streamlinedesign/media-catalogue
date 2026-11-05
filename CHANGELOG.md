@@ -4,6 +4,10 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Home: the cover is shown as it is, not tinted green.
+- Spectrum: each analysis is stamped with the moment the card plays it and
+  the window asks 30 times a second, so the bars no longer trail or stutter
+  behind the sound.
 - Stations: every playlist, and the whole library, is a station that is
   always on. A station is a schedule (a shuffled order that changes every
   time round, the same artist kept apart, laid end to end from a fixed

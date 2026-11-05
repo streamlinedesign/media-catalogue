@@ -172,7 +172,7 @@ impl Player {
         self.levels
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
+            .at(std::time::Instant::now())
     }
 }
 
