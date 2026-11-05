@@ -7,7 +7,7 @@
 //!
 //!   katalog-window                       talks to http://127.0.0.1:7300
 //!   katalog-window --url http://host:7300
-//!   space: play/pause   n / p: next, previous   r: radio   esc: back
+//!   space: play/pause   n / p: next, previous   + / -: volume   r: radio   esc: back
 
 mod api;
 mod icons;
@@ -172,6 +172,8 @@ enum Message {
     Toggle,
     Next,
     Prev,
+    /// Volume up or down by this many percent.
+    Volume(i32),
     SeekFraction(f32),
     SeekMs(u64),
     Jump(usize),
@@ -891,6 +893,15 @@ impl App {
                 Some(serde_json::json!({ "album": id })),
             ),
             Message::Toggle => self.player_post("/api/player/toggle", None),
+            Message::Volume(step) => {
+                // Steps land on multiples of five, so 100 comes back exactly
+                // and playback is bit-perfect again there.
+                let now = (self.player.volume * 100.0).round() as i32;
+                let next = ((now + step) as f32 / 5.0).round() as i32 * 5;
+                let v = next.clamp(0, 100) as f32 / 100.0;
+                self.player.volume = v;
+                self.player_post(&format!("/api/player/volume?v={v}"), None)
+            }
             Message::Next => self.player_post("/api/player/next", None),
             Message::Prev => self.player_post("/api/player/prev", None),
             Message::SeekFraction(f) => {
@@ -1006,6 +1017,8 @@ impl App {
                     Key::Character("n") => Some(Message::Next),
                     Key::Character("p") => Some(Message::Prev),
                     Key::Character("r") => Some(Message::RadioOn(None)),
+                    Key::Character("+") | Key::Character("=") => Some(Message::Volume(5)),
+                    Key::Character("-") => Some(Message::Volume(-5)),
                     _ => None,
                 }
             }),
@@ -2080,6 +2093,33 @@ impl App {
         ]
         .align_y(Alignment::Center);
 
+        let vol_btn = |label: &'static str, m: Message| {
+            button(
+                text(label)
+                    .size(18)
+                    .font(BOLD)
+                    .line_height(1.0)
+                    .color(CARD_TEXT),
+            )
+            .style(style::plain_in(CARD_TEXT))
+            .padding([2, 8])
+            .on_press(m)
+        };
+        let volume = row![
+            vol_btn("−", Message::Volume(-5)),
+            container(text(format!("{:.0}", p.volume * 100.0)).size(13).color(
+                if p.volume < 0.999 {
+                    CARD_TEXT
+                } else {
+                    CARD_SOFT
+                }
+            ))
+            .width(Length::Fixed(30.0))
+            .align_x(iced::alignment::Horizontal::Center),
+            vol_btn("+", Message::Volume(5)),
+        ]
+        .align_y(Alignment::Center);
+
         let fraction = if p.duration_ms > 0 {
             p.position_ms as f32 / p.duration_ms as f32
         } else {
@@ -2098,9 +2138,6 @@ impl App {
         }
         if p.bit_perfect {
             detail_parts.push("bit-perfect".into());
-        }
-        if p.volume < 0.999 {
-            detail_parts.push(format!("volume {:.0}%", p.volume * 100.0));
         }
         if let (Some(i), false) = (p.index, p.queue.is_empty()) {
             detail_parts.push(format!("{}/{} in queue", i + 1, p.queue.len()));
@@ -2151,7 +2188,9 @@ impl App {
             transport,
             Space::with_width(24),
             progress_col,
-            Space::with_width(24),
+            Space::with_width(16),
+            volume,
+            Space::with_width(16),
             lyric,
         ]
         .align_y(Alignment::Center)
