@@ -421,7 +421,7 @@ async fn station_stream(
             .await
             .map(|b| (Ok::<_, std::convert::Infallible>(b), rx))
     }));
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "audio/wav")
         .header("cache-control", "no-store")
         .header(
@@ -431,7 +431,7 @@ async fn station_stream(
                 .collect::<String>(),
         )
         .body(body)
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// The spectrum as it sounds now: `{"bands": [0.0..1.0, ...]}`, low to high.
