@@ -143,6 +143,18 @@ pub struct Status {
     pub albums_without_art: i64,
 }
 
+/// A search hit from LRCLIB, with its text ready to save.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LyricsHit {
+    pub source: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: Option<i64>,
+    pub synced: bool,
+    pub text: String,
+}
+
 /// One line of synced lyrics.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LyricLine {
@@ -253,6 +265,14 @@ impl Client {
 
     pub async fn delete<T: serde::de::DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
         self.send(reqwest::Method::DELETE, path, None).await
+    }
+
+    pub async fn put<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> ApiResult<T> {
+        self.send(reqwest::Method::PUT, path, Some(body)).await
     }
 
     async fn send<T: serde::de::DeserializeOwned>(

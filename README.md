@@ -40,7 +40,8 @@ One window, drawn by [iced](https://iced.rs) (no GTK, no web view), in the Kapto
 Satoshi, navy and cream, headings on rules, numbers pinned to the right, a black card for what
 is playing. Albums as a grid of covers (typographic placeholders where there is no art), an
 album page with its tracks, artists, the queue, and lyrics that follow the song and jump when
-you click a line. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
+you click a line. When a song has no lyrics the Lyrics tab offers the LRCLIB search: edit the
+words, search with or without the artist, click a hit to keep it. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
 It holds no library state of its own: everything comes from katalogd, so it can run on another
 machine than the music. Space plays and pauses, `n` and `p` skip, `r` puts the radio on, Esc and
 Backspace go back.
