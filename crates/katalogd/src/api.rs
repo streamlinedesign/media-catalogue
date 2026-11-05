@@ -67,6 +67,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/movies/{id}", get(movie))
         .route("/api/shows", get(shows))
         .route("/api/shows/{id}", get(show))
+        .route("/api/channels", get(channels))
+        .route("/api/channels/{n}/watch", get(watch_channel))
         .route("/api/movies/{id}/watch", get(watch_movie))
         .route("/api/episodes/{id}/watch", get(watch_episode))
         .route("/video/{kind}/{id}", get(video_file))
@@ -222,6 +224,43 @@ struct WatchAnswer {
     sub_urls: Vec<String>,
     /// The mpv arguments for all of the above, local paths first choice.
     mpv: Vec<String>,
+}
+
+/// The three TV channels, with what is on now and next.
+async fn channels(State(s): State<Shared>) -> ApiResult<Vec<katalog_core::channels::Channel>> {
+    let now = katalog_core::stations::now_ms();
+    Ok(Json(katalog_core::channels::listing(&s.db.lock(), now)?))
+}
+
+#[derive(Serialize)]
+struct ChannelWatch {
+    #[serde(flatten)]
+    watch: WatchAnswer,
+    slot: katalog_core::channels::Slot,
+}
+
+/// How to join channel `n` (1 to 3) now: what is on, from where it has got to.
+async fn watch_channel(State(s): State<Shared>, Path(n): Path<usize>) -> ApiResult<ChannelWatch> {
+    use katalog_core::channels::{self, Item};
+    if !(1..=channels::NAMES.len()).contains(&n) {
+        return Err(not_found("channel"));
+    }
+    let now = katalog_core::stations::now_ms();
+    let slot = {
+        let conn = s.db.lock();
+        let e = channels::entries(&conn, n - 1)?;
+        channels::slot_at(&e, n - 1, now).ok_or_else(|| not_found("anything to show"))?
+    };
+    let Json(mut w) = match slot.item {
+        Item::Movie(id) => watch_answer(&s, "movie", None, Some(id)).await?,
+        Item::Episode(id) => watch_answer(&s, "episode", Some(id), None).await?,
+    };
+    let into = (now - slot.start_ms).max(0) as f64 / 1000.0;
+    if into > 1.0 {
+        let at = w.mpv.len() - 1;
+        w.mpv.insert(at, format!("--start={into:.1}"));
+    }
+    Ok(Json(ChannelWatch { watch: w, slot }))
 }
 
 async fn watch_movie(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<WatchAnswer> {

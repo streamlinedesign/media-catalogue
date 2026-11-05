@@ -14,12 +14,13 @@ mod crt;
 mod home;
 mod icons;
 mod style;
+mod tv;
 mod video;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, Movie,
-    OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue, Show, ShowWithEpisodes,
-    Status, Track, Watch,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Channel, ChannelWatch, Client, Levels,
+    Lyrics, LyricsHit, Movie, OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue,
+    Show, ShowWithEpisodes, Status, Track, Watch,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -157,6 +158,10 @@ struct App {
     open_show: Option<ShowWithEpisodes>,
     /// The mpv showing a film or an episode, if one is open.
     mpv: Option<std::process::Child>,
+    tv: tv::Tv,
+    channels: Vec<Channel>,
+    /// When the set went fullscreen, so the click that did it does not undo it.
+    tv_full_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +243,20 @@ enum Message {
     /// Watch a film (`false`) or an episode (`true`) by id.
     Watch(bool, i64),
     Watching(Result<Watch, String>),
+    /// Katalog's own window, for mpv to draw in, and its scale.
+    Xid(u64),
+    Scale(f32),
+    Channels(Result<Vec<Channel>, String>),
+    /// Where the set is on Home.
+    TvArea(iced::Rectangle),
+    TvClick,
+    /// A click anywhere, which ends fullscreen.
+    AnyClick,
+    TvChannel(usize),
+    TvTuned(usize, Result<ChannelWatch, String>),
+    TvPower,
+    /// "sub" or "audio": the next subtitle or sound track.
+    TvCycle(&'static str),
 }
 
 impl App {
@@ -298,6 +317,9 @@ impl App {
             show_open: None,
             open_show: None,
             mpv: None,
+            tv: tv::Tv::default(),
+            channels: Vec::new(),
+            tv_full_at: None,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -306,6 +328,14 @@ impl App {
             app.load_player(),
             app.load_playlists(),
             app.load_video(),
+            app.load_channels(),
+            window::get_oldest().then(|id| match id {
+                Some(id) => Task::batch([
+                    window::get_raw_id::<Message>(id).map(Message::Xid),
+                    window::get_scale_factor(id).map(Message::Scale),
+                ]),
+                None => Task::none(),
+            }),
             text_input::focus(text_input::Id::new("search")),
         ];
         // For screenshots in development:
@@ -368,6 +398,81 @@ impl App {
         let task = Task::batch(tasks);
         let _ = client;
         (app, task)
+    }
+
+    fn load_channels(&self) -> Task<Message> {
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.get("/api/channels").await },
+            Message::Channels,
+        )
+    }
+
+    fn tune(&self, n: usize) -> Task<Message> {
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.get(&format!("/api/channels/{}/watch", n + 1)).await },
+            move |r| Message::TvTuned(n, r),
+        )
+    }
+
+    /// Keeps the set on its channel: starts it when Home shows, follows the
+    /// schedule to the next film or episode, and comes back to the channel
+    /// when something asked for has ended. Without X11 it waits for a click.
+    fn tv_follow(&mut self) -> Task<Message> {
+        if !self.tv.power || self.tv.standalone || self.tv.parent.is_none() {
+            return Task::none();
+        }
+        let visible = self.tab == Tab::Home || self.tv.full;
+        let playing = self.tv.playing();
+        match self.tv.on.clone() {
+            tv::On::Asked(_) if playing => Task::none(),
+            tv::On::Channel(n, start) if playing => {
+                let now = self
+                    .channels
+                    .get(n)
+                    .and_then(|c| c.now.as_ref())
+                    .map(|s| s.start_ms);
+                if now.is_some_and(|s| s != start) && visible {
+                    self.tune(n)
+                } else {
+                    Task::none()
+                }
+            }
+            _ if visible && self.tv.area.is_some() || self.tv.full => {
+                self.tv.on = tv::On::Nothing;
+                self.tune(self.tv.channel)
+            }
+            _ => {
+                self.tv.on = tv::On::Nothing;
+                self.tv.place();
+                Task::none()
+            }
+        }
+    }
+
+    fn tv_fullscreen(&mut self, full: bool) -> Task<Message> {
+        if self.tv.full == full {
+            return Task::none();
+        }
+        self.tv.full = full;
+        self.tv_full_at = full.then(std::time::Instant::now);
+        let asked = matches!(self.tv.on, tv::On::Asked(_));
+        self.tv.set_sound(full || asked);
+        self.tv.place();
+        let mode = if full {
+            window::Mode::Fullscreen
+        } else {
+            window::Mode::Windowed
+        };
+        let mut t = vec![window::get_oldest().then(move |id| match id {
+            Some(id) => window::change_mode(id, mode),
+            None => Task::none(),
+        })];
+        if full && self.player.state == PlayState::Playing {
+            t.push(self.player_post("/api/player/pause", None));
+        }
+        Task::batch(t)
     }
 
     fn load_video(&self) -> Task<Message> {
@@ -536,6 +641,34 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let before = self.tab;
+        let task = self.handle(message);
+        if self.tab != before {
+            self.tv_tab_changed();
+        }
+        task
+    }
+
+    /// Off Home the set is hidden: a channel nobody can see is not worth
+    /// decoding, and a film waits for you to come back.
+    fn tv_tab_changed(&mut self) {
+        let asked = matches!(self.tv.on, tv::On::Asked(_));
+        if self.tab != Tab::Home {
+            self.tv.area = None;
+            if !self.tv.full {
+                if asked {
+                    self.tv.set_pause(true);
+                } else {
+                    self.tv.stop();
+                }
+            }
+        } else if asked {
+            self.tv.set_pause(false);
+        }
+        self.tv.place();
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
                 self.ticks += 1;
@@ -555,6 +688,9 @@ impl App {
                     tasks.push(self.load_playlists());
                 }
                 tasks.push(self.load_visible_art());
+                if (self.tab == Tab::Home || self.tv.full) && self.ticks % 4 == 3 {
+                    tasks.push(self.load_channels());
+                }
                 if self.tab == Tab::Home && self.ticks % 4 == 1 {
                     tasks.push(self.load_on_air());
                 }
@@ -1081,6 +1217,19 @@ impl App {
                 };
                 Task::perform(async move { c.get(&path).await }, Message::Watching)
             }
+            Message::Watching(Ok(w)) if !self.tv.standalone && self.tv.parent.is_some() => {
+                // On the set, with sound; a click makes it fullscreen.
+                let args = w.args(&self.client.base);
+                self.tv.power = true;
+                if let Err(e) = self.tv.play(&args, tv::On::Asked(w.title.clone()), true) {
+                    self.error = Some(e);
+                }
+                self.tab = Tab::Home;
+                if self.player.state == PlayState::Playing {
+                    return self.player_post("/api/player/pause", None);
+                }
+                Task::none()
+            }
             Message::Watching(Ok(w)) => {
                 if let Some(mut old) = self.mpv.take() {
                     let _ = old.kill();
@@ -1111,6 +1260,89 @@ impl App {
                 self.error = Some(e);
                 Task::none()
             }
+            Message::Xid(x) => {
+                self.tv.parent = u32::try_from(x).ok();
+                self.tv_follow()
+            }
+            Message::Scale(s) => {
+                self.tv.scale = s;
+                self.tv.place();
+                Task::none()
+            }
+            Message::Channels(Ok(c)) => {
+                self.channels = c;
+                self.tv_follow()
+            }
+            Message::Channels(Err(_)) => Task::none(),
+            Message::TvArea(r) => {
+                if self.tab == Tab::Home {
+                    self.tv.area = Some(r);
+                    self.tv.place();
+                }
+                self.tv_follow()
+            }
+            Message::TvClick => {
+                if self.tv.full {
+                    return Task::none();
+                }
+                if self.tv.standalone || self.tv.parent.is_none() {
+                    // No set to draw in: the channel in a window of its own.
+                    return self.tune(self.tv.channel);
+                }
+                if !self.tv.power {
+                    self.tv.power = true;
+                    return self.tv_follow();
+                }
+                self.tv_fullscreen(true)
+            }
+            Message::AnyClick => {
+                let fresh = self
+                    .tv_full_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+                if self.tv.full && !fresh {
+                    return self.tv_fullscreen(false);
+                }
+                Task::none()
+            }
+            Message::TvChannel(n) => {
+                self.tv.channel = n;
+                self.tv.power = true;
+                self.tune(n)
+            }
+            Message::TvTuned(n, Ok(cw)) => {
+                if n != self.tv.channel || !self.tv.power {
+                    return Task::none();
+                }
+                let args = cw.watch.args(&self.client.base);
+                let sound = self.tv.full || self.tv.standalone;
+                if let Err(e) = self
+                    .tv
+                    .play(&args, tv::On::Channel(n, cw.slot.start_ms), sound)
+                {
+                    self.error = Some(e);
+                }
+                Task::none()
+            }
+            Message::TvTuned(_, Err(_)) => {
+                // Nothing on (no films with a known length yet): stay dark.
+                self.tv.stop();
+                self.tv.place();
+                Task::none()
+            }
+            Message::TvPower => {
+                self.tv.power = !self.tv.power;
+                if self.tv.power {
+                    self.tv_follow()
+                } else {
+                    self.tv.stop();
+                    self.tv.place();
+                    self.tv_fullscreen(false)
+                }
+            }
+            Message::TvCycle(what) => {
+                self.tv.command(serde_json::json!(["cycle", what]));
+                Task::none()
+            }
             Message::ShowLoaded(Ok(s)) => {
                 self.open_show = Some(s);
                 Task::none()
@@ -1119,6 +1351,7 @@ impl App {
                 self.error = Some(e);
                 Task::none()
             }
+            Message::Back if self.tv.full => self.tv_fullscreen(false),
             Message::Back => {
                 if self.adding.is_some() {
                     self.adding = None;
@@ -1145,6 +1378,11 @@ impl App {
                 "/api/player/queue",
                 Some(serde_json::json!({ "album": id })),
             ),
+            // Fullscreen, space is the film's.
+            Message::Toggle if self.tv.full && self.tv.embedded() => {
+                self.tv.command(serde_json::json!(["cycle", "pause"]));
+                Task::none()
+            }
             Message::Toggle => self.player_post("/api/player/toggle", None),
             Message::Volume(step) => {
                 // Steps land on multiples of five, so 100 comes back exactly
@@ -1172,6 +1410,8 @@ impl App {
             Message::Resized(w, h) => {
                 self.width = w;
                 self.height = h;
+                self.tv.window = iced::Size::new(w, h);
+                self.tv.place();
                 self.load_visible_art()
             }
             // Development only: pretend the first track of the open album is playing,
@@ -1352,6 +1592,9 @@ impl App {
                 iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
                     iced::mouse::Button::Back,
                 )) => Some(Message::Back),
+                iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::AnyClick),
                 _ => None,
             }),
             keyboard::on_key_press(|key, modifiers| {

@@ -133,6 +133,7 @@ impl App {
         .into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn poster_card<'a>(
         &self,
         poster_id: Option<i64>,
