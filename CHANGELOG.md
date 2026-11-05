@@ -4,6 +4,9 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Tonight's film at the top of the Movies tab: poster, title, release
+  date, length and genres, a taste of the plot, Play now, More and
+  Another. One a day, the same all day.
 - Extras are no longer films or episodes. A folder that holds a film
   holds only that film, so videos in folders below it are extras; in a
   show only S01E02 files and `Season` folders count; Plex and Jellyfin
