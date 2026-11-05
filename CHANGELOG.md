@@ -4,6 +4,8 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Window: volume − and + in the now-playing bar, and the `-` and `+` keys,
+  in steps of five; at 100 playback is bit-perfect again.
 - Window: when the playing track has no lyrics, the Lyrics tab searches
   LRCLIB with the title (editable, with or without the artist) and saves the
   hit you click. No terminal needed.
