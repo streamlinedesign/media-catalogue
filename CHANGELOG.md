@@ -4,6 +4,13 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- The TV no longer takes the sound card from the music. A silent set has
+  no audio track at all; it gets sound only when it goes fullscreen or
+  plays a film you asked for, after the music is paused, and gives it
+  back the moment music is asked for. katalogd lets go of the card while
+  paused, and waits a moment for it when it is busy. TURN OFF folds the
+  set to one line and stays off until TURN ON. The CRT shows on black:
+  darker scanlines with a faint lit line between them.
 - Tonight's film at the top of the Movies tab: poster, title, release
   date, length and genres, a taste of the plot, Play now, More and
   Another. One a day, the same all day.

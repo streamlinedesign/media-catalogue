@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.12.1: the TV and the music share the sound card; TV off stays off; stronger CRT
 - 0.12.0: tonight's film
 - 0.11.1: extras left out of films and shows; TMDB after every scan
 - 0.11.0: the television on Home, three channels

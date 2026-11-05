@@ -192,6 +192,9 @@ struct Engine {
     current: Option<Current>,
     sink: Option<Sink>,
     paused: bool,
+    /// The card's format and bit-perfectness from before a pause let it go,
+    /// so a paused status still says what was playing.
+    paused_format: Option<(String, bool)>,
     volume: f32,
     error: Option<String>,
     radio: Option<Radio>,
@@ -237,6 +240,7 @@ impl Engine {
             current: None,
             sink: None,
             paused: false,
+            paused_format: None,
             volume: 1.0,
             error: None,
             radio: None,
@@ -657,7 +661,7 @@ impl Engine {
                     s.drain();
                 }
                 self.sink = None;
-                let sink = match Sink::open(&self.device, spec) {
+                let sink = match open_waiting(&self.device, spec) {
                     Ok(s) => s,
                     Err(e) if self.device != "default" => {
                         warn!("{e:#}; falling back to the ALSA default device");
@@ -666,6 +670,7 @@ impl Engine {
                     Err(e) => return Err(e),
                 };
                 self.sink = Some(sink);
+                self.paused_format = None;
                 self.meter.reset();
                 Ok(())
             }
@@ -674,6 +679,7 @@ impl Engine {
 
     fn close_sink(&mut self) {
         self.sink = None;
+        self.paused_format = None;
         self.meter.reset();
     }
 
@@ -685,27 +691,25 @@ impl Engine {
         if paused {
             self.meter.reset();
         }
+        if !paused {
+            // The card was let go on pause; the next write opens it again.
+            return;
+        }
         let Some(sink) = self.sink.as_mut() else {
             return;
         };
-        if paused {
-            if sink.pause_drops() {
-                // What was buffered is lost; wind the decoder back to match.
-                let lost = sink.delay_frames();
-                sink.pause();
-                if let Some(cur) = self.current.as_mut() {
-                    let ms =
-                        cur.frames_out.saturating_sub(lost) * 1000 / cur.decoder.spec.rate as u64;
-                    if let Ok(landed) = cur.decoder.seek(ms) {
-                        cur.frames_out = landed * cur.decoder.spec.rate as u64 / 1000;
-                    }
-                }
-            } else {
-                sink.pause();
+        // Paused, the card is let go so mpv (or anything else) can use it.
+        // What was buffered is lost; wind the decoder back to match.
+        let lost = sink.delay_frames();
+        sink.flush();
+        if let Some(cur) = self.current.as_mut() {
+            let ms = cur.frames_out.saturating_sub(lost) * 1000 / cur.decoder.spec.rate as u64;
+            if let Ok(landed) = cur.decoder.seek(ms) {
+                cur.frames_out = landed * cur.decoder.spec.rate as u64 / 1000;
             }
-        } else {
-            sink.resume();
         }
+        self.paused_format = Some((sink.spec.to_string(), sink.bit_perfect));
+        self.sink = None;
     }
 
     fn seek(&mut self, ms: u64) -> Result<()> {
@@ -812,9 +816,13 @@ impl Engine {
             .as_ref()
             .map(|s| s.device.clone())
             .unwrap_or_else(|| self.device.clone());
-        st.format = self.sink.as_ref().map(|s| s.spec.to_string());
-        st.bit_perfect =
-            self.sink.as_ref().map(|s| s.bit_perfect).unwrap_or(false) && self.volume >= 0.999;
+        let (format, perfect) = match (&self.sink, &self.paused_format) {
+            (Some(s), _) => (Some(s.spec.to_string()), s.bit_perfect),
+            (None, Some((f, p))) if self.current.is_some() => (Some(f.clone()), *p),
+            _ => (None, false),
+        };
+        st.format = format;
+        st.bit_perfect = perfect && self.volume >= 0.999;
         st.error = self.error.clone();
         st.radio = self.radio.clone();
         st.notice = self.notice.clone();
@@ -824,4 +832,19 @@ impl Engine {
 fn mark_finished(conn: &Connection, play_id: i64) -> Result<()> {
     conn.execute("UPDATE plays SET finished = 1 WHERE id = ?1", [play_id])?;
     Ok(())
+}
+
+/// Opens the card, waiting a moment if something else has it: the window's
+/// TV lets go of it as soon as music is asked for.
+fn open_waiting(device: &str, spec: decode::Spec) -> Result<Sink> {
+    let mut tries = 0;
+    loop {
+        match Sink::open(device, spec) {
+            Err(e) if tries < 20 && format!("{e:#}").contains("busy") => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            r => return r,
+        }
+    }
 }

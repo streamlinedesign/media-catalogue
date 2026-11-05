@@ -1,7 +1,8 @@
-//! A CRT over the whole window: dark scanlines every few pixels and a soft
-//! vignette towards the edges. Drawn once per window size and cached, it
-//! takes no input, so everything under it works as before. `c` turns it off
-//! and on.
+//! A CRT over the whole window: dark scanlines every few pixels with a faint
+//! lit line between them, so the lines show on a dark page as well as a
+//! light one, and a vignette towards the edges. Drawn once per window size
+//! and cached, it takes no input, so everything under it works as before.
+//! `c` turns it off and on.
 
 use iced::mouse;
 use iced::widget::canvas::{self, Cache, Canvas, Frame, Geometry, Program};
@@ -9,10 +10,12 @@ use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 
 /// Pixels from one scanline to the next.
 const PITCH: f32 = 3.0;
-const LINE_ALPHA: f32 = 0.22;
+const LINE_ALPHA: f32 = 0.42;
+/// The lit line between two dark ones: what makes the raster show on black.
+const GLOW_ALPHA: f32 = 0.06;
 /// How far the vignette reaches in from each edge, as a share of the side.
-const VIGNETTE: f32 = 0.18;
-const VIGNETTE_ALPHA: f32 = 0.45;
+const VIGNETTE: f32 = 0.22;
+const VIGNETTE_ALPHA: f32 = 0.6;
 
 #[derive(Default)]
 pub struct Crt {
@@ -53,9 +56,13 @@ impl<M> Program<M> for Crt {
                 let w = bounds.width.floor();
                 let h = bounds.height.floor();
                 let line = Color::from_rgba(0.0, 0.0, 0.0, LINE_ALPHA);
+                let glow = Color::from_rgba(1.0, 1.0, 1.0, GLOW_ALPHA);
                 let mut y = 0.0;
                 while y < h {
                     frame.fill_rectangle(Point::new(0.0, y), Size::new(w, 1.0), line);
+                    if y + 1.0 < h {
+                        frame.fill_rectangle(Point::new(0.0, y + 1.0), Size::new(w, 1.0), glow);
+                    }
                     y += PITCH;
                 }
                 // The vignette as thin bands, darker towards each edge. Whole

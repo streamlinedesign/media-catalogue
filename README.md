@@ -193,9 +193,14 @@ On X11 mpv draws inside the set. On Home it plays without sound; a click on the 
 makes it fullscreen with sound (the radio pauses), and a click or Esc brings it back. Space
 pauses the film while fullscreen. SUB and AUDIO step through the subtitle and sound tracks.
 Play on a film or an episode puts it on the set with sound; when it ends the channel comes
-back. Leaving Home pauses a film and switches a channel off. POWER turns the set off, and
-`KATALOG_TV=0` starts the window with it off. Without X11 (Wayland) a click on the set opens
-the channel in mpv's own window.
+back. Leaving Home pauses a film and switches a channel off. TURN OFF folds the set to one
+line and it stays off, across restarts, until TURN ON (`KATALOG_TV=0` or `1` overrides).
+Without X11 (Wayland) a click on the set opens the channel in mpv's own window.
+
+The set and the music share one sound card. katalogd plays bit-perfect to the card itself,
+so only one of them can have it: a silent set has no audio track at all, the set takes sound
+only after the music is paused (paused, katalogd lets go of the card), and playing music
+takes the card back from the set.
 
     GET  /api/channels                 the three channels: what is on now and next
     GET  /api/channels/{n}/watch       how to join channel n now, with mpv's --start

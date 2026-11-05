@@ -123,6 +123,9 @@ pub struct Tv {
     pub channel: usize,
     pub on: On,
     pub power: bool,
+    /// Whether mpv has the sound card. Silent, it has no audio track at all,
+    /// so the card stays free for the music.
+    pub sound: bool,
     pub full: bool,
     /// Where the set is on Home, in logical pixels, when Home is showing.
     pub area: Option<Rectangle>,
@@ -148,7 +151,8 @@ impl Default for Tv {
             on: On::Nothing,
             power: std::env::var("KATALOG_TV")
                 .map(|v| v != "0")
-                .unwrap_or(true),
+                .unwrap_or_else(|_| !off_marker().exists()),
+            sound: false,
             full: false,
             area: None,
             window: Size::new(1440.0, 900.0),
@@ -177,6 +181,7 @@ impl Tv {
             let _ = c.kill();
             let _ = c.wait();
         }
+        self.sound = false;
         self.on = On::Nothing;
     }
 
@@ -246,8 +251,9 @@ impl Tv {
         cmd.arg(format!("--input-ipc-server={}", self.socket.display()))
             .arg("--keep-open=no")
             .arg("--idle=no")
-            .arg(format!("--mute={}", if sound { "no" } else { "yes" }))
             .args(args)
+            // After katalogd's arguments, so this wins.
+            .arg(format!("--aid={}", if sound { "auto" } else { "no" }))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -264,6 +270,7 @@ impl Tv {
             .spawn()
             .map_err(|e| format!("could not start mpv: {e}"))?;
         self.mpv = Some(child);
+        self.sound = sound;
         self.on = on;
         self.place();
         Ok(())
@@ -280,14 +287,47 @@ impl Tv {
         self.command(serde_json::json!(["set_property", "pause", on]));
     }
 
-    pub fn set_sound(&self, on: bool) {
-        self.command(serde_json::json!(["set_property", "mute", !on]));
+    /// Gives mpv the sound card, or takes it back. Taking the audio track
+    /// away closes mpv's audio output, which a mute would not.
+    pub fn set_sound(&mut self, on: bool) {
+        if self.sound == on {
+            return;
+        }
+        self.sound = on;
+        self.command(serde_json::json!([
+            "set_property",
+            "aid",
+            if on { "auto" } else { "no" }
+        ]));
+    }
+
+    /// Turns the set on or off, and remembers it for next time.
+    pub fn set_power(&mut self, on: bool) {
+        self.power = on;
+        let marker = off_marker();
+        if on {
+            let _ = std::fs::remove_file(marker);
+        } else {
+            if let Some(d) = marker.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(marker, "");
+        }
     }
 
     /// The set's picture is in mpv, not drawn by iced.
     pub fn embedded(&self) -> bool {
         self.embed.is_some() && self.mpv.is_some()
     }
+}
+
+/// Left behind when the set is switched off, so it stays off.
+fn off_marker() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("katalog/tv-off")
 }
 
 impl Drop for Tv {
