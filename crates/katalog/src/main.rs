@@ -109,6 +109,14 @@ enum Cmd {
     Url {
         id: i64,
     },
+    /// Watch a film, or an episode of a show, in mpv: English subtitles on
+    /// when it has them. Music pauses.
+    Watch {
+        /// A film's name or id, or a show's
+        name: String,
+        /// For a show: the episode, as s01e02 or 1x02
+        episode: Option<String>,
+    },
 
     /// Play tracks now, replacing the queue
     Play {
@@ -328,6 +336,48 @@ async fn run() -> Result<()> {
         }
         Cmd::Url { id } => {
             println!("{base}/stream/{id}");
+            return Ok(());
+        }
+        Cmd::Watch { name, episode } => {
+            let path = match episode {
+                None => {
+                    let films = get("/api/movies".into()).await?;
+                    let id = find_by_title(&films, name).ok_or_else(|| {
+                        anyhow::anyhow!("no film called {name}; see `katalog movies`")
+                    })?;
+                    format!("/api/movies/{id}/watch")
+                }
+                Some(ep) => {
+                    let (season, number) = parse_episode(ep)
+                        .ok_or_else(|| anyhow::anyhow!("an episode is s01e02 or 1x02"))?;
+                    let shows = get("/api/shows".into()).await?;
+                    let id = find_by_title(&shows, name).ok_or_else(|| {
+                        anyhow::anyhow!("no show called {name}; see `katalog shows`")
+                    })?;
+                    let show = get(format!("/api/shows/{id}")).await?;
+                    let e = show["episodes"]
+                        .as_array()
+                        .and_then(|a| {
+                            a.iter().find(|e| {
+                                e["season"].as_i64() == Some(season)
+                                    && e["episode"].as_i64() == Some(number)
+                            })
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("{} has no {ep}", show["title"]))?;
+                    format!("/api/episodes/{}/watch", e["id"])
+                }
+            };
+            let w = get(path).await?;
+            let args = mpv_args(&w, base);
+            let _ = http.post(format!("{base}/api/player/pause")).send().await;
+            eprintln!("{}", s(&w["title"]));
+            let status = std::process::Command::new("mpv")
+                .args(&args)
+                .status()
+                .map_err(|e| anyhow::anyhow!("could not start mpv: {e}"))?;
+            if !status.success() {
+                anyhow::bail!("mpv stopped with {status}");
+            }
             return Ok(());
         }
         Cmd::Play {
@@ -552,7 +602,7 @@ async fn run() -> Result<()> {
             "{} covers found · {} lyrics found · {} films and shows found · {} albums, {} tracks and {} films or shows have nothing online · {} lookups failed (run again later)",
             s(&value["art_found"]), s(&value["lyrics_found"]), s(&value["video_found"]), s(&value["art_missing"]), s(&value["lyrics_missing"]), s(&value["video_missing"]), s(&value["failed"])
         ),
-        Cmd::Url { .. } => {}
+        Cmd::Url { .. } | Cmd::Watch { .. } => {}
         Cmd::Now => {
             let lyric = current_lyric(&value, &get).await;
             print_now(&value, lyric.as_deref());
@@ -976,6 +1026,69 @@ fn s(v: &Value) -> String {
         Value::Array(a) => a.iter().map(s).collect::<Vec<_>>().join(","),
         other => other.to_string(),
     }
+}
+
+/// An id, an exact title, or the first title that contains `name`.
+fn find_by_title(list: &Value, name: &str) -> Option<i64> {
+    let a = list.as_array()?;
+    let n = name.to_lowercase();
+    a.iter()
+        .find(|x| x["id"].to_string() == name)
+        .or_else(|| {
+            a.iter()
+                .find(|x| x["title"].as_str().is_some_and(|t| t.to_lowercase() == n))
+        })
+        .or_else(|| {
+            a.iter().find(|x| {
+                x["title"]
+                    .as_str()
+                    .is_some_and(|t| t.to_lowercase().contains(&n))
+            })
+        })
+        .and_then(|x| x["id"].as_i64())
+}
+
+/// "s01e02", "S1E2", "1x02" → (1, 2).
+fn parse_episode(s: &str) -> Option<(i64, i64)> {
+    let l = s.trim().to_lowercase();
+    let (a, b) = match l.strip_prefix('s') {
+        Some(rest) => rest.split_once('e')?,
+        None => l.split_once('x')?,
+    };
+    Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+/// The daemon's mpv arguments; when its files are not on this machine, the
+/// same files from its HTTP server.
+fn mpv_args(w: &Value, base: &str) -> Vec<String> {
+    let mut args: Vec<String> = w["mpv"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let path = w["path"].as_str().unwrap_or("");
+    if !std::path::Path::new(path).exists() {
+        let subs: Vec<&str> = w["sub_urls"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let mut n = 0;
+        for a in args.iter_mut() {
+            if a.starts_with("--sub-file=") {
+                if let Some(u) = subs.get(n) {
+                    *a = format!("--sub-file={base}{u}");
+                }
+                n += 1;
+            } else if a == path {
+                *a = format!("{base}{}", s(&w["url"]));
+            }
+        }
+    }
+    args
 }
 
 fn print_status(v: &Value) {

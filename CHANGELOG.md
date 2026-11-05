@@ -4,6 +4,11 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Watching: Play on a film, or a click on an episode, opens it in mpv
+  with English subtitles on when there are any and none otherwise; music
+  pauses. `katalog watch <film>` and `katalog watch <show> s01e02` do the
+  same from the terminal. `/api/movies/{id}/watch` hands out the mpv
+  arguments, and `/video/...` serves the files to another machine.
 - Films and TV: katalogd scans `Movies/` and `TV-Shows/` beside `Music/`,
   reading titles, years and S01E02 from the names, lengths and subtitle
   languages from ffprobe, subtitle files and folder posters. With

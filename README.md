@@ -152,6 +152,14 @@ the names from their files.
     katalog shows [query]
     katalog show "twin peaks"          # a show's episodes, season by season
     katalog fetch video                # TMDB details and posters for anything new
+    katalog watch stalker              # a film in mpv
+    katalog watch "twin peaks" s01e03  # an episode
+
+Watching needs `mpv`. Play on a film's page (or a click on an episode) opens it in mpv, and
+music pauses. English subtitles are on when there are any: a track the file calls English,
+then `Film.en.srt`, then a `Film.srt` with no language, which is nearly always the one put
+there to be read. Otherwise mpv starts without subtitles. When katalogd runs on another
+machine, mpv plays the file and its subtitles over HTTP from it.
 
 ### Flags
 
@@ -214,6 +222,9 @@ the flake's `lib.userService` instead.
     GET  /api/movies/{id}
     GET  /api/shows?q=                 shows with season and episode counts
     GET  /api/shows/{id}               a show with its episodes
+    GET  /api/movies/{id}/watch        path, URL, subtitle files, the English --sid, and ready mpv arguments
+    GET  /api/episodes/{id}/watch      the same for an episode
+    GET  /video/{movie|episode}/{id}   the video file, with Range support;  /sub/{n} its n-th subtitle file
     GET  /art/{id}                     image bytes, cached forever
     GET  /stream/{track_id}            the audio file, with Range support (seeking works)
 

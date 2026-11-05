@@ -6,7 +6,6 @@
 
 ## Next
 
-- Films and TV, part 2: playback through mpv, English subtitles on by default
 - Part 3: a TV on Home with three channels on a schedule, fullscreen on a click
 - Part 4: tonight's film, with Play now
 
@@ -28,6 +27,7 @@
 
 ## Done
 
+- 0.10.0: watching films and episodes in mpv, English subtitles by default
 - 0.9.0: films and TV in the catalogue
 - 0.8.0: playlists can be kept off the dial
 - 0.7.0: the CRT overlay

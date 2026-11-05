@@ -862,6 +862,88 @@ pub fn episode(conn: &Connection, id: i64) -> Result<Option<Episode>> {
         .optional()?)
 }
 
+// ---------------------------------------------------------------- watching
+
+/// Everything a player needs to show a film or an episode: the file, its
+/// subtitle files, and which subtitle track to turn on.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Watch {
+    pub title: String,
+    pub path: String,
+    pub duration_ms: i64,
+    /// Subtitle files beside the video, in the order they are to be loaded.
+    pub sub_files: Vec<String>,
+    /// mpv's `--sid`: the English track's number, or "no".
+    pub sid: String,
+}
+
+/// mpv numbers subtitle tracks from 1: the file's own first, then each
+/// `--sub-file` in the order given. English is turned on if there is one: a
+/// track the file calls English, then a file named so (`Film.en.srt`), then
+/// a file with no language at all (`Film.srt`), which is nearly always the
+/// one put there to be read. Otherwise there are no subtitles.
+pub fn pick_sid(embedded: &[String], files: &[String]) -> String {
+    if let Some(i) = embedded.iter().position(|l| l == "en") {
+        return (i + 1).to_string();
+    }
+    let n = embedded.len();
+    if let Some(i) = files.iter().position(|l| l == "en") {
+        return (n + i + 1).to_string();
+    }
+    if let Some(i) = files.iter().position(|l| l == "?") {
+        return (n + i + 1).to_string();
+    }
+    "no".into()
+}
+
+pub fn watch(title: String, path: &str, duration_ms: i64) -> Watch {
+    let p = Path::new(path);
+    let embedded = probe(p).subs;
+    let files = sidecar_subs(p);
+    let langs: Vec<String> = files.iter().map(|(_, l)| l.clone()).collect();
+    Watch {
+        title,
+        path: path.to_string(),
+        duration_ms,
+        sid: pick_sid(&embedded, &langs),
+        sub_files: files
+            .into_iter()
+            .map(|(f, _)| f.to_string_lossy().to_string())
+            .collect(),
+    }
+}
+
+/// The title, path and length of a film or an episode, to
+/// hand to `watch` once the database is let go: probing takes a moment.
+pub fn watch_target(
+    conn: &Connection,
+    episode_id: Option<i64>,
+    movie_id: Option<i64>,
+) -> Result<Option<(String, String, i64)>> {
+    if let Some(id) = movie_id {
+        return Ok(movie(conn, id)?.map(|m| {
+            let title = match m.year {
+                Some(y) => format!("{} ({y})", m.title),
+                None => m.title.clone(),
+            };
+            (title, m.path, m.duration_ms)
+        }));
+    }
+    let Some(e) = episode_id
+        .map(|id| episode(conn, id))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let show = show(conn, e.show_id)?.map(|s| s.title).unwrap_or_default();
+    let mut title = format!("{show} · S{:02}E{:02}", e.season, e.episode);
+    if let Some(t) = &e.title {
+        title.push_str(&format!(" · {t}"));
+    }
+    Ok(Some((title, e.path, e.duration_ms)))
+}
+
 // ---------------------------------------------------------------- TMDB
 
 /// A film or show still without TMDB details.
@@ -1180,6 +1262,16 @@ mod tests {
         assert_eq!(p.duration_ms, 5_412_320);
         assert_eq!(p.subs, ["hr", "en", "?"]);
         assert_eq!(list(Some("hr,en,?".into())), ["en", "hr", "?"]);
+    }
+
+    #[test]
+    fn english_subtitles_are_picked_when_there_are_any() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(pick_sid(&v(&["hr", "en"]), &v(&["en"])), "2");
+        assert_eq!(pick_sid(&v(&["hr"]), &v(&["de", "en"])), "3");
+        assert_eq!(pick_sid(&v(&[]), &v(&["?"])), "1");
+        assert_eq!(pick_sid(&v(&["hr", "?"]), &v(&["de"])), "no");
+        assert_eq!(pick_sid(&v(&[]), &v(&[])), "no");
     }
 
     #[test]

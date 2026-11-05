@@ -222,6 +222,42 @@ pub struct Episode {
     pub subs: Vec<String>,
 }
 
+/// How katalogd says to watch something; see `/api/movies/{id}/watch`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Watch {
+    pub title: String,
+    pub path: String,
+    pub url: String,
+    pub sub_urls: Vec<String>,
+    pub mpv: Vec<String>,
+}
+
+impl Watch {
+    /// mpv's arguments, with the daemon's URLs in place of its paths when
+    /// the files are not on this machine.
+    pub fn args(&self, base: &str) -> Vec<String> {
+        if std::path::Path::new(&self.path).exists() {
+            return self.mpv.clone();
+        }
+        let mut subs = self.sub_urls.iter();
+        self.mpv
+            .iter()
+            .map(|a| {
+                if a.starts_with("--sub-file=") {
+                    match subs.next() {
+                        Some(u) => format!("--sub-file={base}{u}"),
+                        None => a.clone(),
+                    }
+                } else if *a == self.path {
+                    format!("{base}{}", self.url)
+                } else {
+                    a.clone()
+                }
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ShowWithEpisodes {
     #[serde(flatten)]
