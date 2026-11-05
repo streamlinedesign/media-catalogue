@@ -4,6 +4,16 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Four pages instead of eight tabs. Music is the old Home without the
+  television. Screen is a home for films and shows: the set big, its keys,
+  a guide to the three channels, tonight's film and what is new.
+  Catalogue puts albums, films and shows on one page, each on its colour,
+  with an index that stays put; search covers all three. Settings has a
+  page for music (playlists, the queue, the library, the CRT, Scan now and
+  Fetch) and one for films and shows (folders, subtitles, posters, the set
+  and its channels). The Artists tab is gone; an artist's name on an album
+  still lists their albums. Posters no longer draw past the bottom of a
+  scrolled page.
 - The TV no longer takes the sound card from the music. A silent set has
   no audio track at all; it gets sound only when it goes fullscreen or
   plays a film you asked for, after the music is paused, and gives it

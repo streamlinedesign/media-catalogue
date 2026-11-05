@@ -36,13 +36,25 @@ Nothing is looked up online until you ask: `katalog fetch lyrics` when the wifi 
 
     ./target/release/katalog-window     # or KATALOG_URL=http://host:7300 katalog-window
 
-One window, drawn by [iced](https://iced.rs) (no GTK, no web view), in the Kaptol design:
-Satoshi, navy and cream, headings on rules, numbers pinned to the right, a black card for what
-is playing. Albums as a grid of covers (typographic placeholders where there is no art), an
-album page with its tracks, artists, the queue, and lyrics that follow the song and jump when
-you click a line. When a song has no lyrics the Lyrics tab offers the LRCLIB search: edit the
-words, search with or without the artist, click a hit to keep it. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
-Home, the first screen, is a dashboard in another register: green on black in IBM Plex Mono,
+One window, drawn by [iced](https://iced.rs) (no GTK, no web view), with four pages:
+
+- **Music**, the first screen, the home for music (below).
+- **Screen**, the home for films and shows: the television big, with its keys and a guide
+  to the three channels, tonight's film, and what is new.
+- **Catalogue**: albums, films and shows on one page, each section on its own colour (navy,
+  black, wine), with an index on the left that stays put. Typing searches all three. Each
+  album, film and show has its own page.
+- **Settings**: one page for music (playlists, the queue, the library, the CRT) and one for
+  films and shows (folders, subtitles, posters, the set and its channels), in the same
+  colours.
+
+The catalogue and settings are in the Kaptol design: Satoshi, navy and cream, headings on
+rules, numbers pinned to the right, a black card for what is playing. Lyrics follow the song
+and jump when you click a line; the Lyrics heading on Music opens the whole song, and when a
+song has no lyrics, the LRCLIB search: edit the words, search with or without the artist,
+click a hit to keep it. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing
+searches.
+Music is a dashboard in another register: green on black in IBM Plex Mono,
 the cover, a spectrum that follows the sound, the keys, what comes next, four
 albums picked for the one playing (same genre, same artist, a wildcard, same century), five
 lines of lyrics, and a receiver: each playlist is a station on the dial, and power and tuning
@@ -123,14 +135,14 @@ costs nothing. To reach it from a phone, start katalogd with `--bind 0.0.0.0:730
 The loop guard is always on: a track may play three times in a row, and the fourth start
 (play, prev, a restart) moves on to the next one instead. `katalog now` and the window say so.
 
-In the window: a Playlists tab with a box for a new name, a page per playlist with Play, Add to
+In the window, under Settings: the playlists, with a box for a new name, a page per playlist with Play, Add to
 queue, Radio and Delete, a `+` on every song that opens a row of your playlists (bold where it
 already is) and a box for a new one, and `r` turns the radio on for everything.
 
 ### Films and TV
 
-katalogd also reads `Movies/` and `TV-Shows/` next to `Music/`, and the window has a Movies
-tab (on black) and a TV tab (on wine) with a poster grid and a page per film and show. Names
+katalogd also reads `Movies/` and `TV-Shows/` next to `Music/`, and the catalogue has films
+(on black) and shows (on wine) as posters, with a page per film and show. Names
 are read the way people save them:
 
     Movies/The Thing (1982)/The Thing (1982).mkv
@@ -177,24 +189,24 @@ then `Film.en.srt`, then a `Film.srt` with no language, which is nearly always t
 there to be read. Otherwise mpv starts without subtitles. When katalogd runs on another
 machine, mpv plays the file and its subtitles over HTTP from it.
 
-The Movies tab opens on tonight's film: one a day, the same all day, from the films with a
+Screen shows tonight's film: one a day, the same all day, from the films with a
 poster. Play now puts it on the television, More opens its page, Another picks again.
 
 ### The television
 
-Home has a television above the lists, with three channels that are always on, worked out
+Screen has a television, with three channels that are always on, worked out
 like the radio's stations so switching on joins a film part way through:
 
 - **1 Films**: every film, shuffled, a new order each time round.
 - **2 Series**: every show in turn, one episode each, in order.
 - **3 Everything**: films and episodes together, a show kept apart from itself.
 
-On X11 mpv draws inside the set. On Home it plays without sound; a click on the picture
+On X11 mpv draws inside the set. On Screen it plays without sound; a click on the picture
 makes it fullscreen with sound (the radio pauses), and a click or Esc brings it back. Space
 pauses the film while fullscreen. SUB and AUDIO step through the subtitle and sound tracks.
 Play on a film or an episode puts it on the set with sound; when it ends the channel comes
-back. Leaving Home pauses a film and switches a channel off. TURN OFF folds the set to one
-line and it stays off, across restarts, until TURN ON (`KATALOG_TV=0` or `1` overrides).
+back. Leaving Screen pauses a film and switches a channel off. TURN OFF switches the set
+off and it stays off, across restarts, until TURN ON (`KATALOG_TV=0` or `1` overrides).
 Without X11 (Wayland) a click on the set opens the channel in mpv's own window.
 
 The set and the music share one sound card. katalogd plays bit-perfect to the card itself,
