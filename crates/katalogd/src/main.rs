@@ -10,6 +10,7 @@
 //!   katalogd --device hw:1,0       play through that card, bit-perfect
 
 mod api;
+mod onair;
 mod player;
 mod watch;
 

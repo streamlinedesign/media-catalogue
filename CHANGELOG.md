@@ -4,6 +4,11 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Stations as streams: `GET /stations/<name>.wav` plays a station live as
+  an endless 44.1 kHz 16-bit stereo WAV that mpv, VLC or a phone can open
+  (files at other rates are resampled for the stream only). A thread per
+  listener, nothing when nobody listens. `katalog stations` prints each
+  station's address.
 - Volume now turns the sound card's own mixer control, the one alsamixer
   shows, with alsamixer's numbers and curve; playback stays bit-perfect at
   every volume. Cards without a control still scale the samples. The player

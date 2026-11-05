@@ -25,7 +25,7 @@
 //!   katalog playlist-remove <name> <n>
 //!   katalog playlist-rename <name> <new name>
 //!   katalog playlist-delete <name>
-//!   katalog stations                        every station and what is on it now
+//!   katalog stations                        every station, what is on it now, its stream
 //!   katalog radio [playlist]                tune in to a playlist's station, or everything
 //!   katalog radio --off
 //!
@@ -501,7 +501,7 @@ async fn run() -> Result<()> {
         | Cmd::Remove { .. }
         | Cmd::Radio { .. }
         | Cmd::Clear => print_now(&value, None),
-        Cmd::Stations => print_stations(&value),
+        Cmd::Stations => print_stations(&value, base),
         Cmd::Playlists => print_rows(&value, &["id", "name", "track_count", "duration_ms"]),
         Cmd::Playlist { .. } | Cmd::PlaylistAdd { .. } | Cmd::PlaylistRemove { .. } => {
             print_playlist(&value)
@@ -857,9 +857,13 @@ async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
     check(res).await
 }
 
-fn print_stations(v: &Value) {
+fn print_stations(v: &Value, base: &str) {
     let Some(list) = v.as_array() else { return };
     for st in list {
+        let slug = match st["playlist"].as_i64() {
+            Some(id) => id.to_string(),
+            None => "everything".into(),
+        };
         let now = &st["now"];
         let on = if now.is_null() {
             "nothing to play".to_string()
@@ -873,6 +877,7 @@ fn print_stations(v: &Value) {
             )
         };
         println!("{:<20} {on}", s(&st["name"]));
+        println!("{:<20} {base}/stations/{slug}.wav", "");
     }
 }
 
