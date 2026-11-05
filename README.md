@@ -43,7 +43,7 @@ album page with its tracks, artists, the queue, and lyrics that follow the song 
 you click a line. When a song has no lyrics the Lyrics tab offers the LRCLIB search: edit the
 words, search with or without the artist, click a hit to keep it. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
 Home, the first screen, is a dashboard in another register: green on black in IBM Plex Mono,
-the cover tinted to match, a spectrum that follows the sound, the keys, what comes next, four
+the cover, a spectrum that follows the sound, the keys, what comes next, four
 albums picked for the one playing (same genre, same artist, a wildcard, same century), five
 lines of lyrics, and a receiver: each playlist is a station on the dial, and power and tuning
 drive the radio.
@@ -63,9 +63,15 @@ Without a GPU it falls back to software rendering (`ICED_BACKEND=tiny-skia` forc
     katalog now                        # track, position bar, format, the current lyric line
     katalog toggle | pause | resume | next | prev | stop
     katalog seek 1:30 | seek +10 | seek -10
-    katalog volume 80                  # 100 leaves the samples untouched
+    katalog volume 80                  # the card's own volume, as alsamixer shows it
     katalog queue | jump 4 | remove 4 | clear
     katalog devices                    # what --device can be set to
+
+Volume turns the sound card's own control (Master, PCM, or whatever the card has), the one
+alsamixer shows, with the same numbers and the same loudness curve, so the samples are never
+touched and playback stays bit-perfect at every volume. A turn in alsamixer shows up in the
+window. A card with no volume control of its own falls back to scaling the samples, which is
+bit-perfect only at 100.
 
 Playback goes straight to ALSA. With `--device auto` (the default) katalogd picks the first
 hardware output that is not HDMI and opens it as `hw:`, at the file's own sample rate and bit

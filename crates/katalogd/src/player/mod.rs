@@ -11,6 +11,7 @@
 
 pub mod decode;
 pub mod levels;
+pub mod mixer;
 pub mod output;
 
 use anyhow::{Context, Result};
@@ -43,8 +44,11 @@ pub struct Status {
     pub duration_ms: u64,
     pub queue: Vec<i64>,
     pub index: Option<usize>,
-    /// 0.0 to 1.0. At 1.0 the samples are untouched.
+    /// 0.0 to 1.0. With `hw_volume` it is the card's own control, as
+    /// alsamixer shows it; without, the samples are scaled (untouched at 1.0).
     pub volume: f32,
+    /// True when the volume turns the sound card's mixer.
+    pub hw_volume: bool,
     pub device: String,
     /// The stream as the card is running it, like "44100 Hz · 16 bit · 2 ch".
     pub format: Option<String>,
@@ -137,6 +141,7 @@ impl Player {
             queue: Vec::new(),
             index: None,
             volume: 1.0,
+            hw_volume: false,
             device: device.clone(),
             format: None,
             bit_perfect: false,
@@ -172,7 +177,7 @@ impl Player {
         self.levels
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
+            .at(std::time::Instant::now())
     }
 }
 
@@ -198,6 +203,11 @@ struct Engine {
     meter: levels::Meter,
     /// Radio: where the last queued slot of the station ends, Unix ms.
     on_air_until: i64,
+    /// The card's volume control, when it has one; then `volume` stays 1.0.
+    hw: Option<mixer::HwVolume>,
+    /// The card's volume as last read, and when.
+    hw_level: f32,
+    hw_read: std::time::Instant,
 }
 
 struct Current {
@@ -236,10 +246,15 @@ impl Engine {
             notice: None,
             meter,
             on_air_until: 0,
+            hw: None,
+            hw_level: 1.0,
+            hw_read: std::time::Instant::now(),
         }
     }
 
     fn run(mut self) {
+        self.hw = mixer::HwVolume::open(&self.device);
+        self.read_hw();
         loop {
             let active = self.current.is_some() && !self.paused;
             let cmd = if active {
@@ -387,7 +402,17 @@ impl Engine {
                 }
             }
             Cmd::SeekMs(ms) => self.seek(ms)?,
-            Cmd::Volume(v) => self.volume = v.clamp(0.0, 1.0),
+            Cmd::Volume(v) => {
+                let v = v.clamp(0.0, 1.0);
+                match &self.hw {
+                    Some(hw) => {
+                        hw.set(v)?;
+                        self.hw_level = v;
+                        self.hw_read = std::time::Instant::now();
+                    }
+                    None => self.volume = v,
+                }
+            }
         }
         Ok(())
     }
@@ -746,7 +771,18 @@ impl Engine {
         Ok(self.conn.last_insert_rowid())
     }
 
-    fn publish(&self) {
+    /// Reads the card's volume, so a turn in alsamixer shows in every view.
+    fn read_hw(&mut self) {
+        if let Some(v) = self.hw.as_ref().and_then(|hw| hw.get()) {
+            self.hw_level = v;
+        }
+        self.hw_read = std::time::Instant::now();
+    }
+
+    fn publish(&mut self) {
+        if self.hw.is_some() && self.hw_read.elapsed() > Duration::from_millis(250) {
+            self.read_hw();
+        }
         let state = match (&self.current, self.paused) {
             (None, _) => PlayState::Stopped,
             (Some(_), true) => PlayState::Paused,
@@ -765,7 +801,12 @@ impl Engine {
             st.queue = self.queue.clone();
         }
         st.index = self.index;
-        st.volume = self.volume;
+        st.volume = if self.hw.is_some() {
+            self.hw_level
+        } else {
+            self.volume
+        };
+        st.hw_volume = self.hw.is_some();
         st.device = self
             .sink
             .as_ref()

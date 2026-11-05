@@ -157,14 +157,14 @@ impl App {
         column![line, Space::with_height(16), rule()].into()
     }
 
-    /// The cover in green, and the song under it.
+    /// The cover, and the song under it.
     fn home_now(&self, side: f32) -> Element<'_, Message> {
         let p = &self.player;
         let art = p
             .track
             .as_ref()
             .and_then(|t| t.art_id)
-            .and_then(|id| self.art_green.get(&id));
+            .and_then(|id| self.art.get(&(id, crate::HOME_ART)));
         let cover: Element<Message> = match art {
             Some(h) => container(
                 image(h.clone())
@@ -826,23 +826,4 @@ impl<M> Program<M> for Knob {
         }
         vec![frame.into_geometry()]
     }
-}
-
-/// The cover as the screen would show it: dark where the image is dark, lit
-/// green where it is light.
-pub fn phosphor(bytes: &[u8]) -> Option<image::Handle> {
-    let img = ::image::load_from_memory(bytes).ok()?.to_luma8();
-    let (w, h) = img.dimensions();
-    let lo = [SCREEN.r, SCREEN.g, SCREEN.b];
-    let hi = [G.r, G.g, G.b];
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    for p in img.pixels() {
-        // A little contrast so mid greys do not all land on one shade.
-        let l = (p.0[0] as f32 / 255.0).powf(1.2);
-        for c in 0..3 {
-            out.push(((lo[c] + (hi[c] - lo[c]) * l) * 255.0).round() as u8);
-        }
-        out.push(255);
-    }
-    Some(image::Handle::from_rgba(w, h, out))
 }

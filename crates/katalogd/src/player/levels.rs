@@ -1,9 +1,12 @@
 //! A plain spectrum for the window: a handful of bands, 0.0 to 1.0, worked out
-//! from the samples on their way to the card and published when they are heard,
-//! not when they are written, so the bars keep time with the sound.
+//! from the samples on their way to the card. Each analysis is stamped with
+//! the moment the card will play it, and a reader gets the one for now, so
+//! the bars keep time with the sound however often the player or the window
+//! wakes up.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Bars in the spectrum.
 pub const BANDS: usize = 32;
@@ -13,10 +16,34 @@ const RATE_HZ: u32 = 30;
 /// Below this the bar is empty.
 const FLOOR_DB: f32 = -70.0;
 
-pub type Shared = Arc<Mutex<Vec<f32>>>;
+/// Analyses waiting for their moment, and the one sounding now.
+pub struct Timeline {
+    queue: VecDeque<(Instant, Vec<f32>)>,
+    current: Vec<f32>,
+}
+
+impl Timeline {
+    /// The bands sounding at `now`.
+    pub fn at(&mut self, now: Instant) -> Vec<f32> {
+        while let Some((when, _)) = self.queue.front() {
+            if *when > now {
+                break;
+            }
+            if let Some((_, b)) = self.queue.pop_front() {
+                self.current = b;
+            }
+        }
+        self.current.clone()
+    }
+}
+
+pub type Shared = Arc<Mutex<Timeline>>;
 
 pub fn shared() -> Shared {
-    Arc::new(Mutex::new(vec![0.0; BANDS]))
+    Arc::new(Mutex::new(Timeline {
+        queue: VecDeque::new(),
+        current: vec![0.0; BANDS],
+    }))
 }
 
 pub struct Meter {
@@ -72,7 +99,9 @@ impl Meter {
             if self.since >= hop && self.window.len() == FFT {
                 self.since = 0;
                 let bands = self.analyse();
-                self.pending.push_back((self.written, bands));
+                // The window is heard around its middle.
+                let at = self.written.saturating_sub(FFT as u64 / 2);
+                self.pending.push_back((at, bands));
                 // Half a second of buffer at 30 a second; never grow without end.
                 if self.pending.len() > 120 {
                     self.pending.pop_front();
@@ -81,18 +110,24 @@ impl Meter {
         }
     }
 
-    /// Publishes what the card is playing now, `delay` frames behind what was written.
+    /// Hands the new analyses to the timeline, each stamped with when the
+    /// card plays it: the card is `delay` frames behind what was written.
     pub fn heard(&mut self, delay: u64) {
-        let now = self.written.saturating_sub(delay);
-        let mut latest = None;
-        while let Some((at, _)) = self.pending.front() {
-            if *at > now {
-                break;
-            }
-            latest = self.pending.pop_front().map(|(_, b)| b);
+        if self.pending.is_empty() || self.rate == 0 {
+            return;
         }
-        if let Some(b) = latest {
-            self.set(b);
+        let now = Instant::now();
+        let playing = self.written.saturating_sub(delay);
+        let rate = self.rate as f64;
+        let Ok(mut t) = self.out.lock() else { return };
+        for (at, bands) in self.pending.drain(..) {
+            let ahead = at.saturating_sub(playing) as f64 / rate;
+            t.queue
+                .push_back((now + Duration::from_secs_f64(ahead), bands));
+        }
+        // A second at 30 a second is more than any card buffers.
+        while t.queue.len() > 60 {
+            t.queue.pop_front();
         }
     }
 
@@ -102,12 +137,9 @@ impl Meter {
         self.pending.clear();
         self.since = 0;
         self.written = 0;
-        self.set(vec![0.0; BANDS]);
-    }
-
-    fn set(&self, bands: Vec<f32>) {
-        if let Ok(mut o) = self.out.lock() {
-            *o = bands;
+        if let Ok(mut t) = self.out.lock() {
+            t.queue.clear();
+            t.current = vec![0.0; BANDS];
         }
     }
 
@@ -207,7 +239,7 @@ mod tests {
             .collect();
         m.feed(&samples, 2, rate);
         m.heard(0);
-        let bands = out.lock().unwrap().clone();
+        let bands = out.lock().unwrap().at(Instant::now());
         let loudest = bands
             .iter()
             .enumerate()
@@ -232,6 +264,13 @@ mod tests {
         let samples = vec![i32::MAX / 2; 44_100 * 2];
         m.feed(&samples, 2, 44_100);
         m.heard(44_100);
-        assert!(out.lock().unwrap().iter().all(|b| *b == 0.0));
+        let now = out.lock().unwrap().at(Instant::now());
+        assert!(now.iter().all(|b| *b == 0.0));
+        // A second later it is.
+        let later = out
+            .lock()
+            .unwrap()
+            .at(Instant::now() + Duration::from_secs(2));
+        assert!(later.iter().any(|b| *b > 0.0));
     }
 }

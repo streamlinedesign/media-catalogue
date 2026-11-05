@@ -65,6 +65,8 @@ const ROW_GAP: f32 = 32.0;
 /// Below the cover: title row, rule, artist line.
 const CARD_TEXT_H: f32 = 70.0;
 const THUMB: u32 = 320;
+/// The cover on Home.
+const HOME_ART: u32 = 640;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -135,11 +137,12 @@ struct App {
     picks: Vec<Pick>,
     picks_for: Option<i64>,
     queued_albums: HashSet<i64>,
-    art_green: HashMap<i64, image::Handle>,
-    art_green_loading: HashSet<i64>,
     side: home::Side,
     tuned: usize,
     on_air: Vec<OnAir>,
+    /// When the volume was last changed here: until a moment after, the
+    /// player's answers may predate the change and must not undo it.
+    volume_set: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,7 +207,6 @@ enum Message {
     Levels(Result<Levels, String>),
     Picks(i64, Result<Vec<Pick>, String>),
     QueueAlbum(i64),
-    ArtGreen(i64, Result<Vec<u8>, String>),
     Side(home::Side),
     /// Move the receiver this many stations; on air, the radio follows.
     Tune(i32),
@@ -255,11 +257,10 @@ impl App {
             picks: Vec::new(),
             picks_for: None,
             queued_albums: HashSet::new(),
-            art_green: HashMap::new(),
-            art_green_loading: HashSet::new(),
             side: home::Side::Next,
             tuned: 0,
             on_air: Vec::new(),
+            volume_set: None,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -397,17 +398,6 @@ impl App {
         )
     }
 
-    /// The cover for Home, tinted to the screen, asked for once.
-    fn want_green(&mut self, art_id: i64) -> Task<Message> {
-        if self.art_green.contains_key(&art_id) || !self.art_green_loading.insert(art_id) {
-            return Task::none();
-        }
-        let c = self.client.clone();
-        Task::perform(
-            async move { c.bytes(&format!("/art/{art_id}?size=640&crop=1")).await },
-            move |r| Message::ArtGreen(art_id, r),
-        )
-    }
     fn load_on_air(&self) -> Task<Message> {
         let c = self.client.clone();
         Task::perform(async move { c.get("/api/stations").await }, Message::OnAir)
@@ -733,6 +723,13 @@ impl App {
                 let track_changed =
                     p.track.as_ref().map(|t| t.id) != self.player.track.as_ref().map(|t| t.id);
                 let queue_changed = p.queue != self.player.queue;
+                let mut p = p;
+                if self
+                    .volume_set
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(1500))
+                {
+                    p.volume = self.player.volume;
+                }
                 self.player = p;
                 self.error = None;
                 let mut tasks = Vec::new();
@@ -751,7 +748,7 @@ impl App {
                 if let Some(t) = self.player.track.clone() {
                     if let Some(a) = t.art_id {
                         tasks.push(self.want_art(a, 128));
-                        tasks.push(self.want_green(a));
+                        tasks.push(self.want_art(a, HOME_ART));
                     }
                     if self.picks_for != Some(t.album_id) {
                         tasks.push(self.load_picks(t.album_id));
@@ -985,6 +982,7 @@ impl App {
                 let next = ((now + step) as f32 / 5.0).round() as i32 * 5;
                 let v = next.clamp(0, 100) as f32 / 100.0;
                 self.player.volume = v;
+                self.volume_set = Some(std::time::Instant::now());
                 self.player_post(&format!("/api/player/volume?v={v}"), None)
             }
             Message::Next => self.player_post("/api/player/next", None),
@@ -1054,7 +1052,7 @@ impl App {
                     .collect();
                 let mut tasks = vec![self.load_picks(t.album_id)];
                 if let Some(a) = t.art_id {
-                    tasks.push(self.want_green(a));
+                    tasks.push(self.want_art(a, HOME_ART));
                 }
                 if self.fake_nolyrics {
                     tasks.push(Task::done(Message::DebugNoLyrics));
@@ -1082,7 +1080,7 @@ impl App {
                 if self.player.state != PlayState::Playing {
                     return Task::none();
                 }
-                // Up at once, down gently, so the bars do not flicker.
+                // Up at once, down quickly but not in one frame.
                 if self.levels.len() != l.bands.len() {
                     self.levels = l.bands;
                 } else {
@@ -1090,7 +1088,7 @@ impl App {
                         *old = if new >= *old {
                             new
                         } else {
-                            *old * 0.6 + new * 0.4
+                            *old * 0.35 + new * 0.65
                         };
                     }
                 }
@@ -1115,17 +1113,6 @@ impl App {
                     "/api/player/queue",
                     Some(serde_json::json!({ "album": id })),
                 )
-            }
-            Message::ArtGreen(id, Ok(bytes)) => {
-                self.art_green_loading.remove(&id);
-                if let Some(h) = home::phosphor(&bytes) {
-                    self.art_green.insert(id, h);
-                }
-                Task::none()
-            }
-            Message::ArtGreen(id, Err(_)) => {
-                self.art_green_loading.remove(&id);
-                Task::none()
             }
             Message::Side(s) => {
                 self.side = s;
@@ -1175,7 +1162,7 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         let spectrum =
             if self.tab == Tab::Home && self.player.state == PlayState::Playing && !self.fake {
-                iced::time::every(Duration::from_millis(66)).map(|_| Message::LevelsTick)
+                iced::time::every(Duration::from_millis(33)).map(|_| Message::LevelsTick)
             } else {
                 Subscription::none()
             };
