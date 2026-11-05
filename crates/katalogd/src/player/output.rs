@@ -153,23 +153,6 @@ impl Sink {
         }
     }
 
-    pub fn resume(&mut self) {
-        if !self.paused {
-            return;
-        }
-        self.paused = false;
-        if self.can_pause {
-            let _ = self.pcm.pause(false);
-        } else {
-            let _ = self.pcm.prepare();
-        }
-    }
-
-    /// True when `pause` throws away the buffered audio instead of holding it.
-    pub fn pause_drops(&self) -> bool {
-        !self.can_pause
-    }
-
     /// Throws away what is buffered, for a seek.
     pub fn flush(&mut self) {
         let _ = self.pcm.drop();

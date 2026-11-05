@@ -257,6 +257,8 @@ enum Message {
     TvChannel(usize),
     TvTuned(usize, Result<ChannelWatch, String>),
     TvPower,
+    /// Sound for the set, once the music has let go of the card.
+    TvSound(bool),
     /// Another film for tonight.
     TonightNext,
     /// "sub" or "audio": the next subtitle or sound track.
@@ -463,21 +465,37 @@ impl App {
         self.tv.full = full;
         self.tv_full_at = full.then(std::time::Instant::now);
         let asked = matches!(self.tv.on, tv::On::Asked(_));
-        self.tv.set_sound(full || asked);
+        let mut t = vec![self.tv_sound(full || asked)];
         self.tv.place();
         let mode = if full {
             window::Mode::Fullscreen
         } else {
             window::Mode::Windowed
         };
-        let mut t = vec![window::get_oldest().then(move |id| match id {
+        t.push(window::get_oldest().then(move |id| match id {
             Some(id) => window::change_mode(id, mode),
             None => Task::none(),
-        })];
-        if full && self.player.state == PlayState::Playing {
-            t.push(self.player_post("/api/player/pause", None));
-        }
+        }));
         Task::batch(t)
+    }
+
+    /// Sound on the set. The music is paused first, which lets go of the
+    /// sound card, and only then does mpv take it.
+    fn tv_sound(&mut self, on: bool) -> Task<Message> {
+        if !on {
+            self.tv.set_sound(false);
+            return Task::none();
+        }
+        if self.tv.sound {
+            return Task::none();
+        }
+        if self.player.state == PlayState::Playing {
+            self.player_post("/api/player/pause", None)
+                .chain(Task::done(Message::TvSound(true)))
+        } else {
+            self.tv.set_sound(true);
+            Task::none()
+        }
     }
 
     fn load_video(&self) -> Task<Message> {
@@ -551,6 +569,16 @@ impl App {
         )
     }
     fn player_post(&self, path: &str, body: Option<serde_json::Value>) -> Task<Message> {
+        let starts = ["/play", "/toggle", "/next", "/prev", "/jump", "/api/radio"];
+        if self.tv.sound
+            && starts
+                .iter()
+                .any(|p| path.ends_with(p) || path.contains(&format!("{p}?")))
+        {
+            // The music is about to want the card; the set lets go of it now.
+            self.tv
+                .command(serde_json::json!(["set_property", "aid", "no"]));
+        }
         let c = self.client.clone();
         let path = path.to_string();
         Task::perform(
@@ -650,6 +678,10 @@ impl App {
         let task = self.handle(message);
         if self.tab != before {
             self.tv_tab_changed();
+        }
+        // Music started while the set had sound: the card goes back to it.
+        if self.tv.sound && self.player.state == PlayState::Playing {
+            self.tv.set_sound(false);
         }
         task
     }
@@ -1226,14 +1258,11 @@ impl App {
                 // On the set, with sound; a click makes it fullscreen.
                 let args = w.args(&self.client.base);
                 self.tv.power = true;
-                if let Err(e) = self.tv.play(&args, tv::On::Asked(w.title.clone()), true) {
+                if let Err(e) = self.tv.play(&args, tv::On::Asked(w.title.clone()), false) {
                     self.error = Some(e);
                 }
                 self.tab = Tab::Home;
-                if self.player.state == PlayState::Playing {
-                    return self.player_post("/api/player/pause", None);
-                }
-                Task::none()
+                self.tv_sound(true)
             }
             Message::Watching(Ok(w)) => {
                 if let Some(mut old) = self.mpv.take() {
@@ -1319,14 +1348,14 @@ impl App {
                     return Task::none();
                 }
                 let args = cw.watch.args(&self.client.base);
-                let sound = self.tv.full || self.tv.standalone;
                 if let Err(e) = self
                     .tv
-                    .play(&args, tv::On::Channel(n, cw.slot.start_ms), sound)
+                    .play(&args, tv::On::Channel(n, cw.slot.start_ms), false)
                 {
                     self.error = Some(e);
                 }
-                Task::none()
+                let sound = self.tv.full || self.tv.standalone;
+                self.tv_sound(sound)
             }
             Message::TvTuned(_, Err(_)) => {
                 // Nothing on (no films with a known length yet): stay dark.
@@ -1338,16 +1367,30 @@ impl App {
                 self.tonight_skip += 1;
                 Task::none()
             }
+            Message::TvSound(on) => {
+                // Only if the set is still showing what asked for it.
+                let wanted =
+                    self.tv.full || self.tv.standalone || matches!(self.tv.on, tv::On::Asked(_));
+                if self.tv.playing() && wanted && self.player.state != PlayState::Playing {
+                    self.tv.set_sound(on);
+                }
+                Task::none()
+            }
             Message::TvPower => {
-                self.tv.power = !self.tv.power;
+                let on = !self.tv.power;
+                self.tv.set_power(on);
                 if self.tv.power {
                     self.tv_follow()
                 } else {
                     self.tv.stop();
+                    // The set folds away; it says where it is again when back on.
+                    self.tv.area = None;
                     self.tv.place();
                     self.tv_fullscreen(false)
                 }
             }
+            // Cycling audio on a silent set would open the card behind the music.
+            Message::TvCycle("audio") if !self.tv.sound => Task::none(),
             Message::TvCycle(what) => {
                 self.tv.command(serde_json::json!(["cycle", what]));
                 Task::none()

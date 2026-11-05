@@ -455,6 +455,19 @@ impl App {
             .padding(0)
             .on_press(m)
         };
+        if !self.tv.power {
+            // Off, the set folds away to one line, so the lists below move up.
+            return row![
+                label("Television"),
+                Space::with_width(10),
+                mono("off", 11.0, DIM),
+                horizontal_space(),
+                key("TURN ON", false, Message::TvPower),
+            ]
+            .align_y(Alignment::Center)
+            .width(Length::Fixed(w))
+            .into();
+        }
         let mut keys = row![].spacing(6).align_y(Alignment::Center);
         for (i, c) in self.channels.iter().enumerate() {
             let lit = self.tv.power && i == self.tv.channel && !matches!(self.tv.on, On::Asked(_));
@@ -469,7 +482,7 @@ impl App {
             key("SUB", false, Message::TvCycle("sub")),
             key("AUDIO", false, Message::TvCycle("audio")),
             horizontal_space(),
-            key("POWER", self.tv.power, Message::TvPower),
+            key("TURN OFF", false, Message::TvPower),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
