@@ -631,15 +631,28 @@ async fn playlist(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<Pla
     Ok(Json(PlaylistWithTracks { playlist, tracks }))
 }
 
+#[derive(Deserialize)]
+struct PlaylistEdit {
+    name: Option<String>,
+    /// False takes the playlist off the radio dial.
+    station: Option<bool>,
+}
+
+/// Renames a playlist and/or puts it on or off the dial.
 async fn rename_playlist(
     State(s): State<Shared>,
     Path(id): Path<i64>,
-    Json(body): Json<NameBody>,
+    Json(body): Json<PlaylistEdit>,
 ) -> ApiResult<db::Playlist> {
     let conn = s.db.lock();
     db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
-    db::rename_playlist(&conn, id, &body.name)
-        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    if let Some(name) = &body.name {
+        db::rename_playlist(&conn, id, name)
+            .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    }
+    if let Some(on) = body.station {
+        db::set_playlist_station(&conn, id, on)?;
+    }
     Ok(Json(
         db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?,
     ))

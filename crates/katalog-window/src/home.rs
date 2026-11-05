@@ -62,12 +62,17 @@ impl App {
             tracks: self.status.tracks,
             mhz: 0.0,
         }];
-        out.extend(self.playlists.iter().map(|p| Station {
-            playlist: Some(p.id),
-            name: p.name.clone(),
-            tracks: p.track_count,
-            mhz: 0.0,
-        }));
+        out.extend(
+            self.playlists
+                .iter()
+                .filter(|p| p.station)
+                .map(|p| Station {
+                    playlist: Some(p.id),
+                    name: p.name.clone(),
+                    tracks: p.track_count,
+                    mhz: 0.0,
+                }),
+        );
         let n = out.len() as f32;
         let span = DIAL_HI - DIAL_LO - 1.0;
         for (i, s) in out.iter_mut().enumerate() {

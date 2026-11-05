@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS track_tags (
 CREATE TABLE IF NOT EXISTS playlists (
   id         INTEGER PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  station    INTEGER NOT NULL DEFAULT 1  -- 0: kept off the radio dial
 );
 CREATE TABLE IF NOT EXISTS playlist_tracks (
   playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
@@ -119,7 +120,26 @@ pub fn open(path: &Path) -> Result<Connection> {
     // WAL lets the player read while the scanner writes.
     let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.execute_batch(SCHEMA)?;
+    migrate(&conn)?;
     Ok(conn)
+}
+
+/// Columns added after a database was first made.
+fn migrate(conn: &Connection) -> Result<()> {
+    let has = |table: &str, column: &str| -> Result<bool> {
+        let mut st = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = st.query_map([], |r| r.get::<_, String>(1))?;
+        for n in names {
+            if n? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    if !has("playlists", "station")? {
+        conn.execute_batch("ALTER TABLE playlists ADD COLUMN station INTEGER NOT NULL DEFAULT 1")?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -428,13 +448,15 @@ pub struct Playlist {
     pub track_count: i64,
     pub duration_ms: i64,
     pub created_at: String,
+    /// On the radio dial as a station.
+    pub station: bool,
 }
 
 const PLAYLIST_SQL: &str = r#"
 SELECT p.id, p.name,
        (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id),
        (SELECT COALESCE(SUM(t.duration_ms), 0) FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id WHERE pt.playlist_id = p.id),
-       p.created_at
+       p.created_at, p.station
 FROM playlists p
 "#;
 
@@ -445,6 +467,7 @@ fn playlist_from_row(r: &Row) -> rusqlite::Result<Playlist> {
         track_count: r.get(2)?,
         duration_ms: r.get(3)?,
         created_at: r.get(4)?,
+        station: r.get::<_, i64>(5)? != 0,
     })
 }
 
@@ -479,6 +502,15 @@ pub fn create_playlist(conn: &Connection, name: &str) -> Result<Playlist> {
     conn.execute("INSERT INTO playlists (name) VALUES (?1)", [name])?;
     let id = conn.last_insert_rowid();
     Ok(playlist(conn, id)?.expect("just inserted"))
+}
+
+/// Puts a playlist on the radio dial or takes it off.
+pub fn set_playlist_station(conn: &Connection, id: i64, station: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE playlists SET station = ?1 WHERE id = ?2",
+        params![station as i64, id],
+    )?;
+    Ok(())
 }
 
 pub fn rename_playlist(conn: &Connection, id: i64, name: &str) -> Result<()> {
@@ -753,6 +785,36 @@ mod tests {
         let p = picks(&conn, 3).unwrap();
         assert_eq!(p[0].why, "same genre");
         assert_eq!(p[1].why, "same genre");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn playlists_from_before_the_toggle_stay_on_the_dial() {
+        let path = std::env::temp_dir().join(format!("katalog-dial-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            // A playlists table as 0.7 made it.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE playlists (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')));
+                 INSERT INTO playlists (id, name) VALUES (1, 'Chill');",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        assert!(playlist(&conn, 1).unwrap().unwrap().station);
+        set_playlist_station(&conn, 1, false).unwrap();
+        assert!(!playlist(&conn, 1).unwrap().unwrap().station);
+        let new = create_playlist(&conn, "Workout").unwrap();
+        assert!(new.station);
+        let on: Vec<String> = playlists(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.station)
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(on, ["Workout"]);
         let _ = std::fs::remove_file(path);
     }
 }

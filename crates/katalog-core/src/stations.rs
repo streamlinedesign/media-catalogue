@@ -204,12 +204,14 @@ pub struct Playing {
     pub duration_ms: i64,
 }
 
-/// Every station, the library first, with what is on at `at_ms`.
+/// Every station, the library first, with what is on at `at_ms`. Playlists
+/// taken off the dial are left out.
 pub fn on_air(conn: &Connection, at_ms: i64) -> Result<Vec<OnAir>> {
     let mut stations = vec![(None, "Everything".to_string())];
     stations.extend(
         db::playlists(conn)?
             .into_iter()
+            .filter(|p| p.station)
             .map(|p| (Some(p.id), p.name)),
     );
     let mut out = Vec::new();

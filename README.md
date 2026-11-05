@@ -95,6 +95,7 @@ has played.
     katalog radio chill                # tune in to that playlist's station
     katalog radio                      # the whole library's station
     katalog radio --off
+    katalog playlist-station todo off  # keep a playlist off the radio dial; `on` puts it back
 
 Every playlist is a station, and so is the whole library. A station is always on, like a real
 one, but nothing runs in the background: it is a schedule. Its songs are shuffled into an
@@ -103,6 +104,10 @@ and laid end to end from a fixed start, so what is on at any moment is a sum. Tu
 the song that is playing, part way through; pausing and coming back joins it live again.
 Adding to or removing from a playlist changes its schedule from then on. The radio stays on
 until you say `--off`, press Play on something else, or switch the window's receiver off.
+
+A playlist you do not want on the radio can be taken off the dial: `katalog playlist-station
+<name> off`, or the "On the dial" chip on its page in the window. It then leaves the receiver
+and `katalog stations`, but you can still play it, and still tune in to it by name.
 
 Every station can also be played by anything on the network, as an endless WAV stream:
 
@@ -194,7 +199,7 @@ the flake's `lib.userService` instead.
     GET  /api/playlists                name, track count, length
     POST /api/playlists                {"name": "chill"}
     GET  /api/playlists/{id}           with its tracks in order
-    PUT  /api/playlists/{id}           {"name": "..."} rename;  DELETE /api/playlists/{id}
+    PUT  /api/playlists/{id}           {"name": "...", "station": false} rename, or take off the dial;  DELETE /api/playlists/{id}
     POST /api/playlists/{id}/tracks    {"tracks":[..]} or {"album":id} or {"artist":id}, appended, no duplicates
     DELETE /api/playlists/{id}/tracks/{position}
     GET  /api/tracks/{id}/playlists    ids of the playlists a track is in

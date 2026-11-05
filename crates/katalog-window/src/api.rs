@@ -15,6 +15,10 @@ pub struct Album {
     pub duration_ms: i64,
 }
 
+fn on_the_dial() -> bool {
+    true
+}
+
 /// An album on the Home shelf and the rule that picked it.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Pick {
@@ -119,6 +123,9 @@ pub struct Playlist {
     pub name: String,
     pub track_count: i64,
     pub duration_ms: i64,
+    /// On the radio dial. Older daemons do not say, and had every playlist on it.
+    #[serde(default = "on_the_dial")]
+    pub station: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
