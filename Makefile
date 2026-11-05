@@ -29,6 +29,21 @@ dev: ## Go catalogue on PORT (open http://localhost:4180)
 daemon: ## Run katalogd from source (scans ~/Library/Music, serves 127.0.0.1:7300)
 	cargo run -p katalogd -- $(ARGS)
 
+install: build ## Put katalogd, katalog and katalog-window in ~/.local/bin and run katalogd as a user service
+	@mkdir -p $(HOME)/.local/bin $(HOME)/.config/systemd/user $(HOME)/.config/katalog
+	install -m 755 target/release/katalogd target/release/katalog target/release/katalog-window $(HOME)/.local/bin/
+	install -m 644 deploy/katalogd.service $(HOME)/.config/systemd/user/katalogd.service
+	@test -f $(HOME)/.config/katalog/env || printf '# KATALOG_LIBRARY=$(HOME)/Library\n# KATALOG_DEVICE=auto\n# KATALOG_BIND=127.0.0.1:7300\n' > $(HOME)/.config/katalog/env
+	systemctl --user daemon-reload
+	systemctl --user enable --now katalogd
+	systemctl --user restart katalogd
+	@echo "katalogd runs as a user service; settings in ~/.config/katalog/env, log: journalctl --user -u katalogd -f"
+
+uninstall: ## Stop the user service and remove the binaries
+	-systemctl --user disable --now katalogd
+	rm -f $(HOME)/.config/systemd/user/katalogd.service $(HOME)/.local/bin/katalogd $(HOME)/.local/bin/katalog $(HOME)/.local/bin/katalog-window
+	systemctl --user daemon-reload
+
 test: ## Go vet and tests, cargo tests
 	go vet ./... && go test ./...
 	cargo test --workspace
@@ -94,4 +109,4 @@ clean: ## Remove build output, the exported site and the local database
 	rm -rf katalog dist site .dev-server $(DB) $(DB)-wal $(DB)-shm
 	cargo clean
 
-.PHONY: help dev daemon test build katalog dist run lint db-reset db-seed psql deploy release configure-repo clean
+.PHONY: help dev daemon install uninstall test build katalog dist run lint db-reset db-seed psql deploy release configure-repo clean

@@ -14,6 +14,9 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 - House conventions: `CLAUDE.md`, `VERSION`, `TODO.md`, `.env.example`, CI and
   auto-PR workflows, the shared Makefile targets; the Go catalogue listens on
   `PORT` (4180) instead of 8080.
+- `make install` puts the binaries in `~/.local/bin` and runs katalogd as a
+  systemd user service (`deploy/katalogd.service`, settings in
+  `~/.config/katalog/env`); `make uninstall` removes it.
 
 ## [0.1.0] - 2026-11-01
 
