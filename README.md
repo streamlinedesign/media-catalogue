@@ -104,6 +104,17 @@ the song that is playing, part way through; pausing and coming back joins it liv
 Adding to or removing from a playlist changes its schedule from then on. The radio stays on
 until you say `--off`, press Play on something else, or switch the window's receiver off.
 
+Every station can also be played by anything on the network, as an endless WAV stream:
+
+    mpv http://127.0.0.1:7300/stations/chill.wav        # a playlist by name or id
+    mpv http://127.0.0.1:7300/stations/everything.wav   # the whole library
+
+Tuning in joins the station live. The stream is 44.1 kHz, 16 bit, stereo whatever the files
+are (other rates are resampled for the stream only; the sound card still gets the files as
+they are), about 1.4 Mbit/s. Each listener gets its own thread; a station nobody listens to
+costs nothing. To reach it from a phone, start katalogd with `--bind 0.0.0.0:7300` (or
+`KATALOG_BIND`); it has no password, so do that on a home network only.
+
 The loop guard is always on: a track may play three times in a row, and the fourth start
 (play, prev, a restart) moves on to the next one instead. `katalog now` and the window say so.
 
@@ -188,6 +199,7 @@ the flake's `lib.userService` instead.
     DELETE /api/playlists/{id}/tracks/{position}
     GET  /api/tracks/{id}/playlists    ids of the playlists a track is in
     GET  /api/stations                 every station, the library first: what is on now and next
+    GET  /stations/{name}.wav          a station as an endless live WAV (name, playlist id, or everything)
     POST /api/radio                    {"playlist": id} or {} for everything, joined live;  DELETE /api/radio turns it off
 
 All answers are JSON except `/art` and `/stream`. CORS is open, so a web view can talk to it directly.

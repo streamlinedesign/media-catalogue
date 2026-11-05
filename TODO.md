@@ -16,7 +16,6 @@
 - Reorder a playlist by dragging; `katalog playlist-move`
 - Stations from tags once `track_tags` is in use
 
-- A stream address per station for mpv, VLC or a phone on the network
 - A CRT overlay for the window (scanlines, vignette; curvature on the GPU)
 
 ## Later
@@ -25,6 +24,7 @@
 
 ## Done
 
+- 0.6.0: a stream address per station
 - 0.5.0: stations, always on, joined live
 - 0.4.0: the Home tab, the spectrum feed, album picks
 - 0.3.0: playlists, the radio, the loop guard, add-to-playlist on every song

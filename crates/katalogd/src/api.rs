@@ -80,6 +80,7 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/api/radio", post(radio_on).delete(radio_off))
         .route("/api/stations", get(stations))
+        .route("/stations/{name}", get(station_stream))
         .route("/api/scan", post(scan))
         .route("/api/fetch", post(fetch))
         .route("/art/{id}", get(art))
@@ -404,6 +405,33 @@ async fn player_status(State(s): State<Shared>) -> Json<PlayerStatus> {
 async fn stations(State(s): State<Shared>) -> ApiResult<Vec<katalog_core::stations::OnAir>> {
     let now = katalog_core::stations::now_ms();
     Ok(Json(katalog_core::stations::on_air(&s.db.lock(), now)?))
+}
+
+/// A station as an endless WAV, from the moment of tuning in:
+/// `/stations/chill.wav`, `/stations/everything.wav`, or a playlist id.
+async fn station_stream(
+    State(s): State<Shared>,
+    Path(name): Path<String>,
+) -> Result<Response, ApiError> {
+    let found = crate::onair::resolve(&s.db.lock(), &name)?;
+    let (playlist, name) = found.ok_or_else(|| not_found("station"))?;
+    let rx = crate::onair::listen(s.clone(), playlist, name.clone());
+    let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv()
+            .await
+            .map(|b| (Ok::<_, std::convert::Infallible>(b), rx))
+    }));
+    Response::builder()
+        .header("content-type", "audio/wav")
+        .header("cache-control", "no-store")
+        .header(
+            "icy-name",
+            name.chars()
+                .filter(|c| c.is_ascii() && !c.is_ascii_control())
+                .collect::<String>(),
+        )
+        .body(body)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// The spectrum as it sounds now: `{"bands": [0.0..1.0, ...]}`, low to high.

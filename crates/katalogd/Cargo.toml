@@ -23,3 +23,6 @@ clap.workspace = true
 alsa.workspace = true
 symphonia.workspace = true
 image.workspace = true
+rubato = "0.16"
+futures-util = "0.3"
+bytes = "1"
