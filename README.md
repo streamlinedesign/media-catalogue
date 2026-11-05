@@ -48,7 +48,7 @@ albums picked for the one playing (same genre, same artist, a wildcard, same cen
 lines of lyrics, and a receiver: each playlist is a station on the dial, and power and tuning
 drive the radio.
 It holds no library state of its own: everything comes from katalogd, so it can run on another
-machine than the music. Space plays and pauses, `n` and `p` skip, `-` and `+` set the volume, `r` puts the radio on, Esc and
+machine than the music. Space plays and pauses, `n` and `p` skip, `-` and `+` set the volume, `r` puts the radio on, `c` turns the CRT look (scanlines and a vignette over the whole window; `KATALOG_CRT=0` starts without it) off and on, Esc and
 Backspace go back.
 
 The window needs the usual Wayland/X11 libraries at run time (`libxkbcommon`, `wayland`,

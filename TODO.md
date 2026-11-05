@@ -16,7 +16,7 @@
 - Reorder a playlist by dragging; `katalog playlist-move`
 - Stations from tags once `track_tags` is in use
 
-- A CRT overlay for the window (scanlines, vignette; curvature on the GPU)
+- CRT: screen curvature and a little bloom, as a shader when the GPU renderer is in use
 
 ## Later
 
@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.7.0: the CRT overlay
 - 0.6.0: a stream address per station
 - 0.5.0: stations, always on, joined live
 - 0.4.0: the Home tab, the spectrum feed, album picks
