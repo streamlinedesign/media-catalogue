@@ -275,6 +275,27 @@ pub async fn scan_paths(
     })
     .await?;
     state.scanning.store(false, Ordering::SeqCst);
+    // With a TMDB key, new films and shows get their posters and details
+    // straight away; only titles not yet looked up are asked about.
+    let has_key = state
+        .args
+        .tmdb_key
+        .as_deref()
+        .is_some_and(|k| !k.trim().is_empty());
+    if has_key && !state.args.no_network {
+        if let Ok(r) = &result {
+            if r.video.is_some() {
+                let s = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = fetch_missing(&s, FetchKind::Video, false).await {
+                        if !format!("{e:#}").contains("already running") {
+                            tracing::warn!("TMDB: {e:#}");
+                        }
+                    }
+                });
+            }
+        }
+    }
     result
 }
 

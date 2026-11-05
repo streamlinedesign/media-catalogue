@@ -461,6 +461,112 @@ fn stat(p: &Path) -> Option<(i64, i64)> {
     Some((m.len() as i64, mtime))
 }
 
+/// Folders that hold extras, as Plex, Jellyfin and Kodi name them.
+const EXTRA_DIRS: &[&str] = &[
+    "extras",
+    "extra",
+    "featurettes",
+    "featurette",
+    "behind the scenes",
+    "behindthescenes",
+    "deleted scenes",
+    "deletedscenes",
+    "interviews",
+    "interview",
+    "scenes",
+    "shorts",
+    "trailers",
+    "trailer",
+    "other",
+    "others",
+    "sample",
+    "samples",
+    "bonus",
+    "bonus features",
+    "making of",
+];
+/// Endings that mark a file as an extra: `Alien-trailer.mkv`.
+const EXTRA_SUFFIXES: &[&str] = &[
+    "sample",
+    "trailer",
+    "featurette",
+    "behindthescenes",
+    "deleted",
+    "deletedscene",
+    "interview",
+    "scene",
+    "short",
+    "other",
+    "extra",
+    "teaser",
+];
+
+fn is_extra(root: &Path, p: &Path) -> bool {
+    let rel = p.strip_prefix(root).unwrap_or(p);
+    let in_extras_dir = rel.parent().is_some_and(|d| {
+        d.components().any(|c| {
+            let c = c.as_os_str().to_string_lossy().to_lowercase();
+            EXTRA_DIRS.contains(&c.trim())
+        })
+    });
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let marked = stem == "sample"
+        || stem == "trailer"
+        || EXTRA_SUFFIXES.iter().any(|x| {
+            stem.ends_with(&format!("-{x}"))
+                || stem.ends_with(&format!(".{x}"))
+                || stem.ends_with(&format!("_{x}"))
+        });
+    in_extras_dir || marked
+}
+
+/// The films under `Movies/`. A folder that holds a film holds that film:
+/// any video in a folder below it (`Featurettes/`, `Bonus/`, whatever it is
+/// called) is an extra. Collections still work, since
+/// `Alien Collection/Alien (1979)/Alien (1979).mkv` has no film above it.
+fn films_under(root: &Path) -> Vec<PathBuf> {
+    let all = videos_under(root);
+    let holds_film: HashSet<&Path> = all.iter().filter_map(|p| p.parent()).collect();
+    all.iter()
+        .filter(|p| {
+            let mut d = p.parent().and_then(Path::parent);
+            while let Some(a) = d {
+                if a == root || !a.starts_with(root) {
+                    return true;
+                }
+                if holds_film.contains(a) {
+                    return false;
+                }
+                d = a.parent();
+            }
+            true
+        })
+        .cloned()
+        .collect()
+}
+
+/// The episodes of a show: files named S01E02 (or 1x02), or anything in a
+/// `Season 1` or `Specials` folder. The rest is extras.
+fn episodes_under(show: &Path) -> Vec<PathBuf> {
+    videos_under(show)
+        .into_iter()
+        .filter(|p| {
+            let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+            let season_dir = p
+                .parent()
+                .filter(|d| *d != show)
+                .and_then(|d| d.file_name())
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .is_some_and(|n| n.starts_with("season") || n == "specials");
+            parse_episode(&stem).is_some() || season_dir
+        })
+        .collect()
+}
+
+/// Every video under `root` that is not an extra.
 fn videos_under(root: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = WalkDir::new(root)
         .follow_links(true)
@@ -468,23 +574,7 @@ fn videos_under(root: &Path) -> Vec<PathBuf> {
         .flatten()
         .filter(|e| e.file_type().is_file() && is_video_path(e.path()))
         .map(|e| e.into_path())
-        // Extras and samples are not the film.
-        .filter(|p| {
-            !p.components().any(|c| {
-                let c = c.as_os_str().to_string_lossy().to_lowercase();
-                c == "extras"
-                    || c == "featurettes"
-                    || c == "sample"
-                    || c == "samples"
-                    || c == "trailers"
-            }) && !p.file_stem().is_some_and(|s| {
-                let s = s.to_string_lossy().to_lowercase();
-                s == "sample"
-                    || s.ends_with("-sample")
-                    || s.ends_with(".sample")
-                    || s.ends_with("-trailer")
-            })
-        })
+        .filter(|p| !is_extra(root, p))
         .collect();
     v.sort();
     v
@@ -498,7 +588,8 @@ fn scan_movies(
 ) -> Result<()> {
     let mut seen = HashSet::new();
     if root.is_dir() {
-        for path in videos_under(root) {
+        let films = films_under(root);
+        for path in films.iter().cloned() {
             let key = path.to_string_lossy().to_string();
             seen.insert(key.clone());
             let Some((size, mtime)) = stat(&path) else {
@@ -518,7 +609,8 @@ fn scan_movies(
             // A film alone in its folder takes the folder's name, which is
             // usually the tidier one.
             let dir = path.parent().unwrap_or(root);
-            let alone = dir != root && videos_under(dir).len() == 1;
+            let alone =
+                dir != root && films.iter().filter(|f| f.parent() == Some(dir)).count() == 1;
             let name = if alone {
                 dir.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -588,7 +680,7 @@ fn scan_shows(
         dirs.sort();
         for dir in dirs {
             let dkey = dir.to_string_lossy().to_string();
-            let files = videos_under(&dir);
+            let files = episodes_under(&dir);
             if files.is_empty() {
                 continue;
             }
@@ -1307,6 +1399,14 @@ mod tests {
         mk("Movies/The Thing (1982)/The Thing (1982).en.srt");
         mk("Movies/The Thing (1982)/poster.jpg");
         mk("Movies/The Thing (1982)/Extras/Making of.mkv");
+        mk("Movies/The Thing (1982)/Behind The Scenes/Crew.mkv");
+        mk("Movies/The Thing (1982)/Bonus Disc/Commentary.mkv");
+        mk("Movies/The Thing (1982)/The Thing-trailer.mkv");
+        mk("Movies/Alien Collection/Alien (1979)/Alien (1979).mkv");
+        mk("Movies/Alien Collection/Alien (1979)/Featurettes/Chestburster.mkv");
+        mk("TV-Shows/Twin Peaks (1990)/Extras/Lynch interview.mkv");
+        mk("TV-Shows/Twin Peaks (1990)/Season 1/Deleted Scenes/Scene 1.mkv");
+        mk("TV-Shows/Twin Peaks (1990)/Promo reel.mkv");
         mk("Movies/Stalker.1979.1080p.BluRay.x264.mkv");
         mk("TV-Shows/Twin Peaks (1990)/Season 1/Twin Peaks - S01E01 - Pilot.mkv");
         mk("TV-Shows/Twin Peaks (1990)/Season 1/Twin Peaks - S01E02.mkv");
@@ -1317,14 +1417,14 @@ mod tests {
             subs: vec!["hr".into()],
         };
         let r = scan_with(&mut conn, &root, &fake).unwrap();
-        assert_eq!((r.movies, r.episodes, r.added), (2, 3, 5));
+        assert_eq!((r.movies, r.episodes, r.added), (3, 3, 6));
         let m = movies(&conn, None).unwrap();
         assert_eq!(
             m.iter().map(|m| m.title.as_str()).collect::<Vec<_>>(),
-            ["Stalker", "The Thing"]
+            ["Alien", "Stalker", "The Thing"]
         );
-        assert_eq!(m[1].subs, ["en", "hr"]);
-        assert!(m[1].poster_id.is_some() && m[0].poster_id.is_none());
+        assert_eq!(m[2].subs, ["en", "hr"]);
+        assert!(m[2].poster_id.is_some() && m[1].poster_id.is_none());
         let s = shows(&conn, None).unwrap();
         assert_eq!(
             (
