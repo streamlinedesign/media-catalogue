@@ -19,7 +19,7 @@ mod video;
 use api::{
     fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, Movie,
     OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue, Show, ShowWithEpisodes,
-    Status, Track,
+    Status, Track, Watch,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -155,6 +155,8 @@ struct App {
     open_movie: Option<i64>,
     show_open: Option<i64>,
     open_show: Option<ShowWithEpisodes>,
+    /// The mpv showing a film or an episode, if one is open.
+    mpv: Option<std::process::Child>,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +235,9 @@ enum Message {
     OpenMovie(i64),
     OpenShow(i64),
     ShowLoaded(Result<ShowWithEpisodes, String>),
+    /// Watch a film (`false`) or an episode (`true`) by id.
+    Watch(bool, i64),
+    Watching(Result<Watch, String>),
 }
 
 impl App {
@@ -292,6 +297,7 @@ impl App {
             open_movie: None,
             show_open: None,
             open_show: None,
+            mpv: None,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -313,6 +319,7 @@ impl App {
                     Some(("adding", id)) => id.parse().ok().map(Message::AddTo),
                     Some(("movie", id)) => id.parse().ok().map(Message::OpenMovie),
                     Some(("show", id)) => id.parse().ok().map(Message::OpenShow),
+                    Some(("watch", id)) => id.parse().ok().map(|id| Message::Watch(false, id)),
                     _ => match part {
                         "playlists" => Some(Message::Tab(Tab::Playlists)),
                         "home" => Some(Message::Tab(Tab::Home)),
@@ -532,6 +539,12 @@ impl App {
         match message {
             Message::Tick => {
                 self.ticks += 1;
+                // Collect an mpv that was closed.
+                if let Some(c) = &mut self.mpv {
+                    if !matches!(c.try_wait(), Ok(None)) {
+                        self.mpv = None;
+                    }
+                }
                 let mut tasks = if self.fake {
                     Vec::new()
                 } else {
@@ -1058,6 +1071,45 @@ impl App {
                         Message::ShowLoaded,
                     ),
                 ])
+            }
+            Message::Watch(episode, id) => {
+                let c = self.client.clone();
+                let path = if episode {
+                    format!("/api/episodes/{id}/watch")
+                } else {
+                    format!("/api/movies/{id}/watch")
+                };
+                Task::perform(async move { c.get(&path).await }, Message::Watching)
+            }
+            Message::Watching(Ok(w)) => {
+                if let Some(mut old) = self.mpv.take() {
+                    let _ = old.kill();
+                    let _ = old.wait();
+                }
+                let args = w.args(&self.client.base);
+                match std::process::Command::new("mpv")
+                    .arg("--force-window=immediate")
+                    .args(&args)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        self.mpv = Some(child);
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(format!("could not start mpv: {e}")),
+                }
+                // A film and the radio at once is noise.
+                if self.player.state == PlayState::Playing {
+                    return self.player_post("/api/player/pause", None);
+                }
+                Task::none()
+            }
+            Message::Watching(Err(e)) => {
+                self.error = Some(e);
+                Task::none()
             }
             Message::ShowLoaded(Ok(s)) => {
                 self.open_show = Some(s);

@@ -67,6 +67,10 @@ pub fn router(state: Shared) -> Router {
         .route("/api/movies/{id}", get(movie))
         .route("/api/shows", get(shows))
         .route("/api/shows/{id}", get(show))
+        .route("/api/movies/{id}/watch", get(watch_movie))
+        .route("/api/episodes/{id}/watch", get(watch_episode))
+        .route("/video/{kind}/{id}", get(video_file))
+        .route("/video/{kind}/{id}/sub/{n}", get(video_sub))
         .route("/api/tracks", get(tracks))
         .route("/api/tracks/{id}", get(track))
         .route("/api/tracks/{id}/lyrics", get(lyrics).put(put_lyrics))
@@ -206,6 +210,106 @@ async fn show(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<ShowWit
     let show = video::show(&conn, id)?.ok_or_else(|| not_found("show"))?;
     let episodes = video::episodes(&conn, id)?;
     Ok(Json(ShowWithEpisodes { show, episodes }))
+}
+
+/// How to watch a film or an episode: the file (as a local path and as a URL
+/// on this server), its subtitle files, and mpv's `--sid` for English.
+#[derive(Serialize)]
+struct WatchAnswer {
+    #[serde(flatten)]
+    watch: video::Watch,
+    url: String,
+    sub_urls: Vec<String>,
+    /// The mpv arguments for all of the above, local paths first choice.
+    mpv: Vec<String>,
+}
+
+async fn watch_movie(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<WatchAnswer> {
+    watch_answer(&s, "movie", None, Some(id)).await
+}
+
+async fn watch_episode(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<WatchAnswer> {
+    watch_answer(&s, "episode", Some(id), None).await
+}
+
+async fn watch_answer(
+    s: &Shared,
+    kind: &'static str,
+    episode: Option<i64>,
+    movie: Option<i64>,
+) -> ApiResult<WatchAnswer> {
+    let (title, path, ms) =
+        video::watch_target(&s.db.lock(), episode, movie)?.ok_or_else(|| not_found(kind))?;
+    let w = tokio::task::spawn_blocking(move || video::watch(title, &path, ms))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let id = episode.or(movie).unwrap_or(0);
+    let url = format!("/video/{kind}/{id}");
+    let sub_urls = (0..w.sub_files.len())
+        .map(|n| format!("{url}/sub/{n}"))
+        .collect();
+    let mpv = mpv_args(&w);
+    Ok(Json(WatchAnswer {
+        watch: w,
+        url,
+        sub_urls,
+        mpv,
+    }))
+}
+
+/// The arguments mpv gets, the file last. Subtitle files are handed over one
+/// by one and mpv's own search is off, so the track numbers are the ones
+/// `--sid` was worked out for.
+fn mpv_args(w: &video::Watch) -> Vec<String> {
+    let mut a = vec![
+        format!("--force-media-title={}", w.title),
+        "--sub-auto=no".into(),
+        format!("--sid={}", w.sid),
+    ];
+    a.extend(w.sub_files.iter().map(|f| format!("--sub-file={f}")));
+    a.push(w.path.clone());
+    a
+}
+
+async fn video_path(s: &Shared, kind: &str, id: i64) -> Result<String, ApiError> {
+    let conn = s.db.lock();
+    let t = match kind {
+        "movie" => video::watch_target(&conn, None, Some(id))?,
+        "episode" => video::watch_target(&conn, Some(id), None)?,
+        _ => None,
+    };
+    Ok(t.ok_or_else(|| not_found("video"))?.1)
+}
+
+async fn video_file(
+    State(s): State<Shared>,
+    Path((kind, id)): Path<(String, i64)>,
+    req: Request<Body>,
+) -> Result<Response, ApiError> {
+    let path = video_path(&s, &kind, id).await?;
+    let res = ServeFile::new(&path)
+        .oneshot(req)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(res.into_response())
+}
+
+async fn video_sub(
+    State(s): State<Shared>,
+    Path((kind, id, n)): Path<(String, i64, usize)>,
+    req: Request<Body>,
+) -> Result<Response, ApiError> {
+    let path = video_path(&s, &kind, id).await?;
+    let file = video::sidecar_subs(std::path::Path::new(&path))
+        .into_iter()
+        .nth(n)
+        .ok_or_else(|| not_found("subtitle"))?
+        .0;
+    let res = ServeFile::new(&file)
+        .oneshot(req)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(res.into_response())
 }
 
 /// Four albums to go with this one, each with the rule that picked it.

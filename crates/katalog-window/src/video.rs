@@ -349,7 +349,11 @@ impl App {
         let mut info = column![
             self.title_block(&m.title, "film", meta.join(" · ")),
             Space::with_height(16),
-            row![chip("All films", Message::Back)],
+            row![
+                chip("Play", Message::Watch(false, m.id)),
+                Space::with_width(8),
+                chip("All films", Message::Back)
+            ],
             Space::with_height(28),
         ];
         if let Some(o) = &m.overview {
@@ -391,7 +395,14 @@ impl App {
         let mut info = column![
             self.title_block(&s.title, "series", meta.join(" · ")),
             Space::with_height(16),
-            row![chip("All shows", Message::Back)],
+            row![
+                chip(
+                    "Play",
+                    Message::Watch(true, episodes.first().map_or(0, |e| e.id))
+                ),
+                Space::with_width(8),
+                chip("All shows", Message::Back)
+            ],
             Space::with_height(28),
         ];
         if let Some(o) = &s.overview {
@@ -424,28 +435,32 @@ impl App {
                 e.subs.join(" ")
             };
             info = info.push(
-                container(
-                    row![
-                        text(format!("{:>2}", e.episode))
+                mouse_area(
+                    container(
+                        row![
+                            text(format!("{:>2}", e.episode))
+                                .size(13)
+                                .color(alpha(CREAM, 0.7))
+                                .width(Length::Fixed(36.0)),
+                            container(text(title).size(15).wrapping(text::Wrapping::None))
+                                .width(Length::Fill)
+                                .clip(true),
+                            text(subs).size(12).color(alpha(CREAM, 0.7)),
+                            Space::with_width(16),
+                            text(if e.duration_ms > 0 {
+                                fmt_ms(e.duration_ms)
+                            } else {
+                                String::new()
+                            })
                             .size(13)
-                            .color(alpha(CREAM, 0.7))
-                            .width(Length::Fixed(36.0)),
-                        container(text(title).size(15).wrapping(text::Wrapping::None))
-                            .width(Length::Fill)
-                            .clip(true),
-                        text(subs).size(12).color(alpha(CREAM, 0.7)),
-                        Space::with_width(16),
-                        text(if e.duration_ms > 0 {
-                            fmt_ms(e.duration_ms)
-                        } else {
-                            String::new()
-                        })
-                        .size(13)
-                        .color(alpha(CREAM, 0.85)),
-                    ]
-                    .align_y(Alignment::Center),
+                            .color(alpha(CREAM, 0.85)),
+                        ]
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([8, 0]),
                 )
-                .padding([8, 0]),
+                .on_press(Message::Watch(true, e.id))
+                .interaction(iced::mouse::Interaction::Pointer),
             );
         }
         let body = row![
