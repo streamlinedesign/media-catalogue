@@ -14,10 +14,12 @@ mod crt;
 mod home;
 mod icons;
 mod style;
+mod video;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, OnAir,
-    Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue, Status, Track,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, Movie,
+    OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue, Show, ShowWithEpisodes,
+    Status, Track,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -59,10 +61,10 @@ fn main() -> iced::Result {
         .run_with(move || App::new(args.url.clone()))
 }
 
-const GUTTER: f32 = 32.0;
+pub(crate) const GUTTER: f32 = 32.0;
 const CARD_MIN: f32 = 200.0;
-const CARD_GAP: f32 = 24.0;
-const ROW_GAP: f32 = 32.0;
+pub(crate) const CARD_GAP: f32 = 24.0;
+pub(crate) const ROW_GAP: f32 = 32.0;
 /// Below the cover: title row, rule, artist line.
 const CARD_TEXT_H: f32 = 70.0;
 const THUMB: u32 = 320;
@@ -75,6 +77,8 @@ enum Tab {
     Albums,
     Artists,
     Playlists,
+    Movies,
+    Tv,
     Queue,
     Lyrics,
 }
@@ -146,6 +150,11 @@ struct App {
     volume_set: Option<std::time::Instant>,
     crt: crt::Crt,
     crt_on: bool,
+    movies: Vec<Movie>,
+    shows: Vec<Show>,
+    open_movie: Option<i64>,
+    show_open: Option<i64>,
+    open_show: Option<ShowWithEpisodes>,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +228,11 @@ enum Message {
     Power,
     /// The CRT overlay on or off.
     Crt,
+    Movies(Result<Vec<Movie>, String>),
+    Shows(Result<Vec<Show>, String>),
+    OpenMovie(i64),
+    OpenShow(i64),
+    ShowLoaded(Result<ShowWithEpisodes, String>),
 }
 
 impl App {
@@ -273,6 +287,11 @@ impl App {
             crt_on: std::env::var("KATALOG_CRT")
                 .map(|v| v != "0")
                 .unwrap_or(true),
+            movies: Vec::new(),
+            shows: Vec::new(),
+            open_movie: None,
+            show_open: None,
+            open_show: None,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -280,6 +299,7 @@ impl App {
             app.load_artists(),
             app.load_player(),
             app.load_playlists(),
+            app.load_video(),
             text_input::focus(text_input::Id::new("search")),
         ];
         // For screenshots in development:
@@ -291,6 +311,8 @@ impl App {
                     Some(("play", id)) => id.parse().ok().map(|id| Message::PlayAlbum(id, 0)),
                     Some(("playlist", id)) => id.parse().ok().map(Message::OpenPlaylist),
                     Some(("adding", id)) => id.parse().ok().map(Message::AddTo),
+                    Some(("movie", id)) => id.parse().ok().map(Message::OpenMovie),
+                    Some(("show", id)) => id.parse().ok().map(Message::OpenShow),
                     _ => match part {
                         "playlists" => Some(Message::Tab(Tab::Playlists)),
                         "home" => Some(Message::Tab(Tab::Home)),
@@ -300,6 +322,8 @@ impl App {
                         "queue" => Some(Message::Tab(Tab::Queue)),
                         "lyrics" => Some(Message::Tab(Tab::Lyrics)),
                         "artists" => Some(Message::Tab(Tab::Artists)),
+                        "movies" => Some(Message::Tab(Tab::Movies)),
+                        "tv" => Some(Message::Tab(Tab::Tv)),
                         "fake" => Some(Message::DebugFake),
                         "search" => Some(Message::LyricsSearch(true)),
                         "nolyrics" => Some(Message::DebugNoLyrics),
@@ -337,6 +361,14 @@ impl App {
         let task = Task::batch(tasks);
         let _ = client;
         (app, task)
+    }
+
+    fn load_video(&self) -> Task<Message> {
+        let (a, b) = (self.client.clone(), self.client.clone());
+        Task::batch([
+            Task::perform(async move { a.get("/api/movies").await }, Message::Movies),
+            Task::perform(async move { b.get("/api/shows").await }, Message::Shows),
+        ])
     }
 
     fn load_status(&self) -> Task<Message> {
@@ -433,7 +465,11 @@ impl App {
         self.art_loading.insert(key);
         let c = self.client.clone();
         Task::perform(
-            async move { c.bytes(&format!("/art/{art_id}?size={size}&crop=1")).await },
+            async move {
+                // Posters keep their shape; covers are cropped square.
+                let crop = if size == video::POSTER { "" } else { "&crop=1" };
+                c.bytes(&format!("/art/{art_id}?size={size}{crop}")).await
+            },
             move |r| Message::Art(art_id, size, r),
         )
     }
@@ -520,13 +556,17 @@ impl App {
             }
             Message::Status(Ok(s)) => {
                 let changed = s.albums != self.status.albums || s.tracks != self.status.tracks;
+                let video = s.movies != self.status.movies || s.shows != self.status.shows;
                 self.status = s;
                 self.error = None;
+                let mut t = vec![];
                 if changed {
-                    Task::batch([self.load_albums(), self.load_artists()])
-                } else {
-                    Task::none()
+                    t.extend([self.load_albums(), self.load_artists()]);
                 }
+                if video {
+                    t.push(self.load_video());
+                }
+                Task::batch(t)
             }
             Message::Status(Err(e)) => {
                 self.error = Some(e);
@@ -941,6 +981,8 @@ impl App {
                 if self.tab == Tab::Queue || self.tab == Tab::Lyrics || self.tab == Tab::Playlists {
                     self.tab = Tab::Albums;
                 }
+                self.open_movie = None;
+                self.show_open = None;
                 self.grid_scroll = 0.0;
                 Task::batch([
                     scrollable::scroll_to(
@@ -958,6 +1000,12 @@ impl App {
                 if t == Tab::Playlists && self.tab == Tab::Playlists {
                     self.list_view = ListView::All;
                 }
+                if t == Tab::Movies && self.tab == Tab::Movies {
+                    self.open_movie = None;
+                }
+                if t == Tab::Tv && self.tab == Tab::Tv {
+                    self.show_open = None;
+                }
                 self.adding = None;
                 self.tab = t;
                 if t == Tab::Playlists {
@@ -965,6 +1013,9 @@ impl App {
                 }
                 if t == Tab::Queue {
                     return self.load_queue();
+                }
+                if t == Tab::Movies || t == Tab::Tv {
+                    return self.load_posters();
                 }
                 self.load_visible_art()
             }
@@ -982,9 +1033,47 @@ impl App {
                 self.grid_scroll = 0.0;
                 self.load_visible_art()
             }
+            Message::Movies(Ok(m)) => {
+                self.movies = m;
+                self.load_posters()
+            }
+            Message::Shows(Ok(s)) => {
+                self.shows = s;
+                self.load_posters()
+            }
+            Message::Movies(Err(_)) | Message::Shows(Err(_)) => Task::none(),
+            Message::OpenMovie(id) => {
+                self.tab = Tab::Movies;
+                self.open_movie = Some(id);
+                self.load_posters()
+            }
+            Message::OpenShow(id) => {
+                self.tab = Tab::Tv;
+                self.show_open = Some(id);
+                let c = self.client.clone();
+                Task::batch([
+                    self.load_posters(),
+                    Task::perform(
+                        async move { c.get(&format!("/api/shows/{id}")).await },
+                        Message::ShowLoaded,
+                    ),
+                ])
+            }
+            Message::ShowLoaded(Ok(s)) => {
+                self.open_show = Some(s);
+                Task::none()
+            }
+            Message::ShowLoaded(Err(e)) => {
+                self.error = Some(e);
+                Task::none()
+            }
             Message::Back => {
                 if self.adding.is_some() {
                     self.adding = None;
+                } else if self.tab == Tab::Movies && self.open_movie.is_some() {
+                    self.open_movie = None;
+                } else if self.tab == Tab::Tv && self.show_open.is_some() {
+                    self.show_open = None;
                 } else if self.tab == Tab::Playlists && self.list_view != ListView::All {
                     self.list_view = ListView::All;
                 } else if self.view != View::Grid {
@@ -1256,13 +1345,18 @@ impl App {
                 ListView::All => self.playlists_view(),
                 ListView::One(id) => self.playlist_view(id),
             },
+            (Tab::Movies, _) => self.movies_view(),
+            (Tab::Tv, _) => self.tv_view(),
             (Tab::Queue, _) => self.queue_view(),
             (Tab::Lyrics, _) => self.lyrics_view(),
         };
-        column![self.header(), body, self.now_playing()]
+        let page = column![self.header(), body, self.now_playing()]
             .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+        match video::page_color(self.tab) {
+            Some(bg) => container(page).style(style::filled(bg)).into(),
+            None => page.into(),
+        }
     }
 
     fn header(&self) -> Element<'_, Message> {
@@ -1275,6 +1369,8 @@ impl App {
             .and_then(|id| self.artists.iter().find(|a| a.id == id))
         {
             Some(a) => format!("Albums by {}", a.name),
+            None if self.tab == Tab::Movies => "Search films, years, genres".to_string(),
+            None if self.tab == Tab::Tv => "Search shows, years, genres".to_string(),
             None => "Search albums, artists, years".to_string(),
         };
         let search = text_input(&placeholder, &self.query)
@@ -1287,12 +1383,17 @@ impl App {
         let search =
             column![search, horizontal_rule(2).style(style::rule_px(CREAM, 2))].width(Length::Fill);
 
-        let total = format!(
-            "{} albums · {} tracks · {}",
-            self.status.albums,
-            self.status.tracks,
-            fmt_long(self.status.duration_ms)
-        );
+        let total = match self.tab {
+            Tab::Movies | Tab::Tv => {
+                format!("{} films · {} shows", self.status.movies, self.status.shows)
+            }
+            _ => format!(
+                "{} albums · {} tracks · {}",
+                self.status.albums,
+                self.status.tracks,
+                fmt_long(self.status.duration_ms)
+            ),
+        };
         let top = row![
             wordmark,
             Space::with_width(GUTTER),
@@ -1328,6 +1429,14 @@ impl App {
                 "Playlists",
                 self.playlists.len().to_string()
             ),
+            Space::with_width(CARD_GAP),
+            self.tab_button(
+                Tab::Movies,
+                "Movies",
+                self.filtered_movies().len().to_string()
+            ),
+            Space::with_width(CARD_GAP),
+            self.tab_button(Tab::Tv, "TV", self.filtered_shows().len().to_string()),
             Space::with_width(CARD_GAP),
             self.tab_button(Tab::Queue, "Queue", self.player.queue.len().to_string()),
             Space::with_width(CARD_GAP),
@@ -2462,7 +2571,7 @@ fn urlencode(s: &str) -> String {
 }
 
 /// An outlined button in the running text size.
-fn chip<'a>(label: &str, m: Message) -> iced::widget::Button<'a, Message> {
+pub(crate) fn chip<'a>(label: &str, m: Message) -> iced::widget::Button<'a, Message> {
     button(text(label.to_string()).size(13))
         .style(style::chip)
         .padding([6, 12])
@@ -2471,7 +2580,7 @@ fn chip<'a>(label: &str, m: Message) -> iced::widget::Button<'a, Message> {
 
 /// "1977" is that year, "197" the whole decade, "70s" and "1970s" too,
 /// "1975-1980" a range.
-fn year_matches(year: i64, q: &str) -> bool {
+pub(crate) fn year_matches(year: i64, q: &str) -> bool {
     let y = year.to_string();
     if let Some((a, b)) = q.split_once('-') {
         if let (Ok(a), Ok(b)) = (a.trim().parse::<i64>(), b.trim().parse::<i64>()) {

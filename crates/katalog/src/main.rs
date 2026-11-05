@@ -60,6 +60,19 @@ enum Cmd {
     Albums {
         query: Option<String>,
     },
+    /// Films, optionally matching a title, year or genre
+    Movies {
+        query: Option<String>,
+    },
+    /// TV shows, optionally matching a query
+    Shows {
+        query: Option<String>,
+    },
+    /// The episodes of a show
+    Show {
+        /// Name or id
+        name: String,
+    },
     /// Tracks matching a query
     Tracks {
         query: Option<String>,
@@ -85,7 +98,7 @@ enum Cmd {
     Scan,
     /// Look up missing lyrics or art online, now. Failures are retried next time.
     Fetch {
-        /// lyrics, art or all
+        /// lyrics, art, video (TMDB, needs TMDB_KEY on katalogd) or all
         #[arg(default_value = "all")]
         kind: String,
         /// Also look again at titles that had nothing online last time
@@ -258,6 +271,35 @@ async fn run() -> Result<()> {
             get(format!("/api/tracks{}{sep}limit={limit}", enc(query))).await?
         }
         Cmd::Album { id } => get(format!("/api/albums/{id}")).await?,
+        Cmd::Movies { query } => get(format!("/api/movies{}", enc(query))).await?,
+        Cmd::Shows { query } => get(format!("/api/shows{}", enc(query))).await?,
+        Cmd::Show { name } => {
+            let shows = get("/api/shows".into()).await?;
+            let found = shows.as_array().and_then(|a| {
+                a.iter()
+                    .find(|s| s["id"].to_string() == *name)
+                    .or_else(|| {
+                        a.iter().find(|s| {
+                            s["title"]
+                                .as_str()
+                                .is_some_and(|t| t.eq_ignore_ascii_case(name))
+                        })
+                    })
+                    .or_else(|| {
+                        let n = name.to_lowercase();
+                        a.iter().find(|s| {
+                            s["title"]
+                                .as_str()
+                                .is_some_and(|t| t.to_lowercase().contains(&n))
+                        })
+                    })
+                    .cloned()
+            });
+            let Some(show) = found else {
+                anyhow::bail!("no show called {name}; see `katalog shows`")
+            };
+            get(format!("/api/shows/{}", show["id"])).await?
+        }
         Cmd::Lyrics { id, search, pick } => {
             let existing = if search.is_none() {
                 match get(format!("/api/tracks/{id}/lyrics")).await {
@@ -278,8 +320,8 @@ async fn run() -> Result<()> {
         }
         Cmd::Scan => post(&http, format!("{base}/api/scan")).await?,
         Cmd::Fetch { kind, retry } => {
-            if !["lyrics", "art", "all"].contains(&kind.as_str()) {
-                anyhow::bail!("kind must be lyrics, art or all");
+            if !["lyrics", "art", "video", "all"].contains(&kind.as_str()) {
+                anyhow::bail!("kind must be lyrics, art, video or all");
             }
             eprintln!("fetching {kind}, this answers when it is done ...");
             post(&http, format!("{base}/api/fetch?kind={kind}&retry={retry}")).await?
@@ -448,6 +490,19 @@ async fn run() -> Result<()> {
         Cmd::Status => print_status(&value),
         Cmd::Artists { .. } => print_rows(&value, &["id", "name", "album_count", "track_count"]),
         Cmd::Albums { .. } => print_rows(&value, &["id", "artist", "title", "year", "track_count"]),
+        Cmd::Movies { .. } => print_rows(&value, &["id", "title", "year", "duration_ms", "subs"]),
+        Cmd::Shows { .. } => print_rows(&value, &["id", "title", "year", "seasons", "episode_count"]),
+        Cmd::Show { .. } => {
+            println!("{} ({})", s(&value["title"]), s(&value["year"]));
+            if let Some(o) = value["overview"].as_str() {
+                println!("{o}");
+            }
+            println!();
+            print_rows(
+                &value["episodes"],
+                &["id", "season", "episode", "title", "duration_ms", "subs"],
+            );
+        }
         Cmd::Tracks { .. } => print_rows(
             &value,
             &[
@@ -494,8 +549,8 @@ async fn run() -> Result<()> {
             value["seconds"].as_f64().unwrap_or(0.0)
         ),
         Cmd::Fetch { .. } => println!(
-            "{} covers found · {} lyrics found · {} albums and {} tracks have nothing online · {} lookups failed (run again later)",
-            s(&value["art_found"]), s(&value["lyrics_found"]), s(&value["art_missing"]), s(&value["lyrics_missing"]), s(&value["failed"])
+            "{} covers found · {} lyrics found · {} films and shows found · {} albums, {} tracks and {} films or shows have nothing online · {} lookups failed (run again later)",
+            s(&value["art_found"]), s(&value["lyrics_found"]), s(&value["video_found"]), s(&value["art_missing"]), s(&value["lyrics_missing"]), s(&value["video_missing"]), s(&value["failed"])
         ),
         Cmd::Url { .. } => {}
         Cmd::Now => {
@@ -918,6 +973,7 @@ fn s(v: &Value) -> String {
                 "".into()
             }
         }
+        Value::Array(a) => a.iter().map(s).collect::<Vec<_>>().join(","),
         other => other.to_string(),
     }
 }
@@ -931,6 +987,12 @@ fn print_status(v: &Value) {
         s(&v["artists"]),
         s(&v["albums"]),
         s(&v["tracks"])
+    );
+    println!(
+        "{} films · {} shows · {} episodes",
+        s(&v["movies"]),
+        s(&v["shows"]),
+        s(&v["episodes"])
     );
     println!(
         "missing art: {} albums · missing lyrics: {} tracks",
@@ -958,7 +1020,11 @@ fn print_rows(v: &Value, cols: &[&str]) {
                     let x = &r[*c];
                     if *c == "duration_ms" {
                         let secs = x.as_i64().unwrap_or(0) / 1000;
-                        format!("{}:{:02}", secs / 60, secs % 60)
+                        if secs >= 3600 {
+                            format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+                        } else {
+                            format!("{}:{:02}", secs / 60, secs % 60)
+                        }
                     } else {
                         s(x)
                     }

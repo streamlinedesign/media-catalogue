@@ -127,6 +127,32 @@ In the window: a Playlists tab with a box for a new name, a page per playlist wi
 queue, Radio and Delete, a `+` on every song that opens a row of your playlists (bold where it
 already is) and a box for a new one, and `r` turns the radio on for everything.
 
+### Films and TV
+
+katalogd also reads `Movies/` and `TV-Shows/` next to `Music/`, and the window has a Movies
+tab (on black) and a TV tab (on wine) with a poster grid and a page per film and show. Names
+are read the way people save them:
+
+    Movies/The Thing (1982)/The Thing (1982).mkv
+    Movies/Stalker.1979.1080p.BluRay.x264.mkv
+    TV-Shows/Twin Peaks (1990)/Season 1/Twin Peaks - S01E03 - Zen.mkv
+    TV-Shows/The Wire/The.Wire.S02E05.720p.mkv
+
+A show is a folder under `TV-Shows/`. Lengths and the languages of subtitle tracks come from
+`ffprobe` (part of ffmpeg); subtitle files beside a video (`Film.srt`, `Film.en.srt`, a `Subs/`
+folder) count too. Extras, samples and trailers are left out. A `poster.jpg` (or `folder.jpg`,
+`cover.jpg`) in the folder is the poster.
+
+Plots, release dates, genres and posters come from TMDB when katalogd has a key: put
+`TMDB_KEY=...` (a v3 API key or a v4 read token, from your password manager) in
+`~/.config/katalog/env`, restart katalogd, then `katalog fetch video`. Without one, films keep
+the names from their files.
+
+    katalog movies [query]             # films, by title, year or genre
+    katalog shows [query]
+    katalog show "twin peaks"          # a show's episodes, season by season
+    katalog fetch video                # TMDB details and posters for anything new
+
 ### Flags
 
 | Flag | Env | Default | Meaning |
@@ -139,6 +165,7 @@ already is) and a box for a new one, and `r` turns the radio on for everything.
 | `--auto-fetch` | | | Look up missing art and lyrics after every scan instead of only on `katalog fetch` |
 | `--no-lrc-files` | | | Keep fetched lyrics in the database only, do not write `.lrc` files |
 | `--scan-only` | | | Scan once, print the report, exit |
+| `--tmdb-key` | `TMDB_KEY` | | TMDB key for film and TV details and posters |
 | `--device` | `KATALOG_DEVICE` | `auto` | ALSA output: `auto`, `default`, `hw:1,0`, `hw:CARD=DAC` (`aplay -l` or `katalog devices`) |
 
 ### Running it all the time
@@ -182,7 +209,11 @@ the flake's `lib.userService` instead.
     GET  /api/tracks/{id}/lyrics/search?q=&artist=   LRCLIB hits with their text, to pick from
     PUT  /api/tracks/{id}/lyrics       {"text": "...", "source": "lrclib"}  save by hand, writes the .lrc
     POST /api/scan
-    POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics, answers when done
+    POST /api/fetch?kind=lyrics|art|video|all&retry=1   look up missing art, lyrics and TMDB details, answers when done
+    GET  /api/movies?q=                films: title, year, length, subtitle languages, TMDB details, poster_id
+    GET  /api/movies/{id}
+    GET  /api/shows?q=                 shows with season and episode counts
+    GET  /api/shows/{id}               a show with its episodes
     GET  /art/{id}                     image bytes, cached forever
     GET  /stream/{track_id}            the audio file, with Range support (seeking works)
 

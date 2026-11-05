@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::Duration;
 use tracing::warn;
 
-const USER_AGENT: &str = concat!(
+pub const USER_AGENT: &str = concat!(
     "Katalog/",
     env!("CARGO_PKG_VERSION"),
     " (personal music library)"
@@ -25,6 +25,9 @@ pub struct FetchReport {
     pub art_missing: usize,
     pub lyrics_found: usize,
     pub lyrics_missing: usize,
+    /// Films and shows TMDB knew, and those it did not.
+    pub video_found: usize,
+    pub video_missing: usize,
     /// Lookups that errored (network, bad answer). These are retried next time.
     pub failed: usize,
 }

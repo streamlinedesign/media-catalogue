@@ -45,7 +45,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
-use katalog_core::db;
+use katalog_core::{db, video};
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use tower_http::cors::{Any, CorsLayer};
@@ -63,6 +63,10 @@ pub fn router(state: Shared) -> Router {
         .route("/api/albums", get(albums))
         .route("/api/albums/{id}", get(album))
         .route("/api/albums/{id}/picks", get(album_picks))
+        .route("/api/movies", get(movies))
+        .route("/api/movies/{id}", get(movie))
+        .route("/api/shows", get(shows))
+        .route("/api/shows/{id}", get(show))
         .route("/api/tracks", get(tracks))
         .route("/api/tracks/{id}", get(track))
         .route("/api/tracks/{id}/lyrics", get(lyrics).put(put_lyrics))
@@ -171,6 +175,37 @@ async fn artists(
 
 async fn albums(State(s): State<Shared>, Query(p): Query<ListQuery>) -> ApiResult<Vec<db::Album>> {
     Ok(Json(db::albums(&s.db.lock(), q(&p.q), p.artist)?))
+}
+
+async fn movies(
+    State(s): State<Shared>,
+    Query(p): Query<ListQuery>,
+) -> ApiResult<Vec<video::Movie>> {
+    Ok(Json(video::movies(&s.db.lock(), q(&p.q))?))
+}
+
+async fn movie(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<video::Movie> {
+    Ok(Json(
+        video::movie(&s.db.lock(), id)?.ok_or_else(|| not_found("film"))?,
+    ))
+}
+
+async fn shows(State(s): State<Shared>, Query(p): Query<ListQuery>) -> ApiResult<Vec<video::Show>> {
+    Ok(Json(video::shows(&s.db.lock(), q(&p.q))?))
+}
+
+#[derive(Serialize)]
+struct ShowWithEpisodes {
+    #[serde(flatten)]
+    show: video::Show,
+    episodes: Vec<video::Episode>,
+}
+
+async fn show(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<ShowWithEpisodes> {
+    let conn = s.db.lock();
+    let show = video::show(&conn, id)?.ok_or_else(|| not_found("show"))?;
+    let episodes = video::episodes(&conn, id)?;
+    Ok(Json(ShowWithEpisodes { show, episodes }))
 }
 
 /// Four albums to go with this one, each with the rule that picked it.

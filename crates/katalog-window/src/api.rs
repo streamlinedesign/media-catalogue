@@ -180,6 +180,53 @@ pub struct Status {
     pub duration_ms: i64,
     pub tracks_without_lyrics: i64,
     pub albums_without_art: i64,
+    #[serde(default)]
+    pub movies: i64,
+    #[serde(default)]
+    pub shows: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Movie {
+    pub id: i64,
+    pub title: String,
+    pub year: Option<i64>,
+    pub duration_ms: i64,
+    pub subs: Vec<String>,
+    pub overview: Option<String>,
+    pub released: Option<String>,
+    pub genres: Vec<String>,
+    pub poster_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Show {
+    pub id: i64,
+    pub title: String,
+    pub year: Option<i64>,
+    pub overview: Option<String>,
+    pub first_aired: Option<String>,
+    pub genres: Vec<String>,
+    pub poster_id: Option<i64>,
+    pub seasons: i64,
+    pub episode_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Episode {
+    pub id: i64,
+    pub season: i64,
+    pub episode: i64,
+    pub title: Option<String>,
+    pub duration_ms: i64,
+    pub subs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ShowWithEpisodes {
+    #[serde(flatten)]
+    pub show: Show,
+    pub episodes: Vec<Episode>,
 }
 
 /// A search hit from LRCLIB, with its text ready to save.

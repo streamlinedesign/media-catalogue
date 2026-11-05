@@ -1,7 +1,7 @@
 //! katalogd: the Katalog daemon.
 //!
-//! Owns the music library. Scans `~/Library/Music`, keeps SQLite in line with it,
-//! finds art and lyrics, and serves everything over HTTP so any view can use it:
+//! Owns the library. Scans `~/Library/Music`, `Movies` and `TV-Shows`, keeps
+//! SQLite in line with them, finds art, lyrics and posters, and serves everything over HTTP so any view can use it:
 //! the desktop window, the CLI, xmobar, or a phone on the same network.
 //!
 //!   katalogd                       scan, watch and serve on 127.0.0.1:7300
@@ -67,6 +67,11 @@ pub struct Args {
     /// hw: devices get the file's own rate and depth, nothing in between.
     #[arg(long, env = "KATALOG_DEVICE", default_value = "auto")]
     device: String,
+
+    /// TMDB v3 API key or v4 read token, for film and TV details and posters.
+    /// Without one, films and shows keep the names from their files.
+    #[arg(long, env = "TMDB_KEY", hide_env_values = true)]
+    tmdb_key: Option<String>,
 }
 
 fn home() -> PathBuf {
@@ -241,12 +246,32 @@ pub async fn scan_paths(
     }
     let s = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let library = &s.args.library;
+        let video_roots = [library.join("Movies"), library.join("TV-Shows")];
         let mut conn = s.db.lock();
-        let mut scanner = Scanner::new(&mut conn, s.music_root.clone());
-        match dirs {
-            Some(d) => scanner.scan_dirs(&d, true),
-            None => scanner.scan_all(),
+        let (music, video) = match &dirs {
+            Some(d) => {
+                let music: Vec<PathBuf> = d
+                    .iter()
+                    .filter(|p| p.starts_with(&s.music_root))
+                    .cloned()
+                    .collect();
+                let video = d
+                    .iter()
+                    .any(|p| video_roots.iter().any(|r| p.starts_with(r)));
+                (Some(music), video)
+            }
+            None => (None, true),
+        };
+        let mut report = match music {
+            Some(m) if m.is_empty() => katalog_core::ScanReport::default(),
+            Some(m) => Scanner::new(&mut conn, s.music_root.clone()).scan_dirs(&m, true)?,
+            None => Scanner::new(&mut conn, s.music_root.clone()).scan_all()?,
+        };
+        if video {
+            report.video = Some(katalog_core::video::scan(&mut conn, library)?);
         }
+        Ok(report)
     })
     .await?;
     state.scanning.store(false, Ordering::SeqCst);
@@ -259,6 +284,8 @@ pub async fn scan_paths(
 pub enum FetchKind {
     Art,
     Lyrics,
+    /// Film and TV details and posters from TMDB.
+    Video,
     All,
 }
 
@@ -286,6 +313,12 @@ pub async fn fetch_missing(
                 r.art_found, r.lyrics_found, r.art_missing, r.lyrics_missing, r.failed
             );
         }
+        if r.video_found + r.video_missing > 0 {
+            info!(
+                "TMDB: {} films and shows found, {} not known",
+                r.video_found, r.video_missing
+            );
+        }
     }
     result
 }
@@ -301,6 +334,11 @@ async fn fetch_inner(
     let mut report = fetch::FetchReport::default();
     let want_art = matches!(kind, FetchKind::Art | FetchKind::All);
     let want_lyrics = matches!(kind, FetchKind::Lyrics | FetchKind::All);
+    let tmdb_key = state.args.tmdb_key.clone().filter(|k| !k.trim().is_empty());
+    if kind == FetchKind::Video && tmdb_key.is_none() {
+        anyhow::bail!("no TMDB key: start katalogd with TMDB_KEY set (or --tmdb-key)");
+    }
+    let want_video = matches!(kind, FetchKind::Video | FetchKind::All) && tmdb_key.is_some();
 
     if retry {
         let conn = state.db.lock();
@@ -310,6 +348,13 @@ async fn fetch_inner(
         if want_lyrics {
             fetch::reset_lyrics_tried(&conn)?;
         }
+        if want_video {
+            katalog_core::video::reset_meta_tried(&conn)?;
+        }
+    }
+
+    if let (true, Some(key)) = (want_video, &tmdb_key) {
+        fetch_video(state, key, &mut report).await?;
     }
 
     // Albums are fetched in batches; a failed one is skipped within this run
@@ -398,6 +443,65 @@ async fn fetch_inner(
         }
     }
     Ok(report)
+}
+
+/// Details and posters for films and shows TMDB has not been asked about yet.
+async fn fetch_video(
+    state: &Shared,
+    key: &str,
+    report: &mut katalog_core::fetch::FetchReport,
+) -> Result<()> {
+    use katalog_core::video::{self, Kind, Tmdb};
+    let tmdb = Tmdb::new(key)?;
+    for kind in [Kind::Movie, Kind::Show] {
+        let mut skip: std::collections::HashSet<i64> = Default::default();
+        loop {
+            let batch: Vec<_> = {
+                let conn = state.db.lock();
+                match kind {
+                    Kind::Movie => video::pending_movies(&conn, 25 + skip.len())?,
+                    Kind::Show => video::pending_shows(&conn, 25 + skip.len())?,
+                }
+            }
+            .into_iter()
+            .filter(|p| !skip.contains(&p.id))
+            .collect();
+            if batch.is_empty() {
+                break;
+            }
+            for p in batch {
+                match tmdb.find(kind, &p.title, p.year).await {
+                    Ok(Some(d)) => {
+                        let poster = match &d.poster_path {
+                            Some(path) => tmdb.poster(path).await.unwrap_or(None),
+                            None => None,
+                        };
+                        video::store_details(&state.db.lock(), kind, p.id, &d, poster)?;
+                        report.video_found += 1;
+                        debug!("TMDB: {} ({:?})", p.title, p.year);
+                    }
+                    Ok(None) => {
+                        video::mark_missing(&state.db.lock(), kind, p.id)?;
+                        report.video_missing += 1;
+                    }
+                    Err(e) => {
+                        if format!("{e:#}").contains("401") {
+                            return Err(e);
+                        }
+                        debug!("TMDB lookup failed for {}: {e:#}", p.title);
+                        report.failed += 1;
+                        skip.insert(p.id);
+                        if is_offline(&e) {
+                            anyhow::bail!("offline: could not reach themoviedb.org, try again when the network is up");
+                        }
+                    }
+                }
+                // Well under TMDB's limit of about 40 requests a second.
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A connection error means we are offline: stop instead of failing every title.

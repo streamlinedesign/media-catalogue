@@ -120,6 +120,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     // WAL lets the player read while the scanner writes.
     let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(crate::video::SCHEMA)?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -203,6 +204,9 @@ pub struct Stats {
     pub bytes: i64,
     pub albums_without_art: i64,
     pub tracks_without_lyrics: i64,
+    pub movies: i64,
+    pub shows: i64,
+    pub episodes: i64,
     pub last_scan: Option<String>,
 }
 
@@ -280,6 +284,9 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
         tracks_without_lyrics: one(
             "SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT track_id FROM lyrics)",
         )?,
+        movies: one("SELECT COUNT(*) FROM movies")?,
+        shows: one("SELECT COUNT(*) FROM shows")?,
+        episodes: one("SELECT COUNT(*) FROM episodes")?,
         last_scan: conn
             .query_row("SELECT value FROM meta WHERE key = 'last_scan'", [], |r| {
                 r.get(0)

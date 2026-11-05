@@ -6,6 +6,10 @@
 
 ## Next
 
+- Films and TV, part 2: playback through mpv, English subtitles on by default
+- Part 3: a TV on Home with three channels on a schedule, fullscreen on a click
+- Part 4: tonight's film, with Play now
+
 - Adopt the Streamline design system (design-system@v0.2.0) in place of Satoshi and the hand-written `web/index.css`
 - Decide the fate of the Go web catalogue: keep, fold into katalogd, or remove (then `release.yml` and `make dist` go with it)
 - Tests: the Go side has none; the Rust side only covers title and artist cleaning in `katalog-core/src/fetch.rs`
@@ -20,10 +24,11 @@
 
 ## Later
 
-- Movies, comics and books in the same window
+- Comics and books in the same window
 
 ## Done
 
+- 0.9.0: films and TV in the catalogue
 - 0.8.0: playlists can be kept off the dial
 - 0.7.0: the CRT overlay
 - 0.6.0: a stream address per station
