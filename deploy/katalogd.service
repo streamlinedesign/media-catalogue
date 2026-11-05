@@ -1,0 +1,21 @@
+# katalogd as a systemd user service. `make install` copies this to
+# ~/.config/systemd/user/ and enables it; it then starts with your session.
+#
+# Settings go in ~/.config/katalog/env, one KEY=value per line, for example
+#   KATALOG_LIBRARY=/home/you/Library
+#   KATALOG_DEVICE=hw:CARD=DAC
+#   KATALOG_BIND=0.0.0.0:7300
+# and take effect after `systemctl --user restart katalogd`.
+
+[Unit]
+Description=Katalog music library daemon
+After=sound.target
+
+[Service]
+ExecStart=%h/.local/bin/katalogd
+EnvironmentFile=-%h/.config/katalog/env
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

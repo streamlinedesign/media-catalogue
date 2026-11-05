@@ -85,6 +85,16 @@ has played. This is what playlists and the radio will be built on.
 | `--scan-only` | | | Scan once, print the report, exit |
 | `--device` | `KATALOG_DEVICE` | `auto` | ALSA output: `auto`, `default`, `hw:1,0`, `hw:CARD=DAC` (`aplay -l` or `katalog devices`) |
 
+### Running it all the time
+
+    make install                       # binaries to ~/.local/bin, katalogd as a systemd user service
+
+The daemon then starts with your session and restarts if it dies. Settings live in
+`~/.config/katalog/env` (`KATALOG_LIBRARY`, `KATALOG_DEVICE`, `KATALOG_BIND`, one per line);
+`systemctl --user restart katalogd` applies them, `journalctl --user -u katalogd -f` shows the
+log, and `make uninstall` takes it all away. The unit is `deploy/katalogd.service`. On NixOS use
+the flake's `lib.userService` instead.
+
 ## What the scanner reads
 
 - Tags: title, artist, album artist, album, year, track and disc numbers, genre.
@@ -136,6 +146,7 @@ All answers are JSON except `/art` and `/stream`. CORS is open, so a web view ca
     crates/katalog        the command line view
     crates/katalog-window the desktop window (iced)
     flake.nix             dev shell, package, and a user service for NixOS or home-manager
+    deploy/               the systemd user unit that make install puts in place
     web/, *.go            the earlier web catalogue, see docs/web-catalogue.md
 
 ## Database

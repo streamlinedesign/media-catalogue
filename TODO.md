@@ -2,7 +2,6 @@
 
 ## Now
 
-- Run make configure-repo once
 - Delete the merged branches `comics-blue`, `fetch-command`, `katalogd`, `lyrics-matching`, `playback`
 
 ## Next
