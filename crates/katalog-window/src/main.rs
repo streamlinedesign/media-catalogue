@@ -7,15 +7,15 @@
 //!
 //!   katalog-window                       talks to http://127.0.0.1:7300
 //!   katalog-window --url http://host:7300
-//!   space: play/pause   n / p: next, previous   /: search   esc: back
+//!   space: play/pause   n / p: next, previous   r: radio   esc: back
 
 mod api;
 mod icons;
 mod style;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Lyrics, PlayState, Player, Queue,
-    Status,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Lyrics, PlayState, Player, Playlist,
+    PlaylistWithTracks, Queue, Status, Track,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -66,6 +66,7 @@ const THUMB: u32 = 320;
 enum Tab {
     Albums,
     Artists,
+    Playlists,
     Queue,
     Lyrics,
 }
@@ -76,12 +77,26 @@ enum View {
     Album(i64),
 }
 
+/// What the Playlists tab shows.
+#[derive(Debug, Clone, PartialEq)]
+enum ListView {
+    All,
+    One(i64),
+}
+
 struct App {
     client: Client,
     status: Status,
     albums: Vec<Album>,
     artists: Vec<Artist>,
     open_album: Option<AlbumWithTracks>,
+    playlists: Vec<Playlist>,
+    open_playlist: Option<PlaylistWithTracks>,
+    list_view: ListView,
+    new_playlist: String,
+    /// The track whose "add to playlist" chooser is open, and where it already is.
+    adding: Option<i64>,
+    adding_in: Vec<i64>,
     query: String,
     artist_filter: Option<i64>,
     tab: Tab,
@@ -110,6 +125,25 @@ enum Message {
     Albums(Result<Vec<Album>, String>),
     Artists(Result<Vec<Artist>, String>),
     AlbumLoaded(Result<AlbumWithTracks, String>),
+    Playlists(Result<Vec<Playlist>, String>),
+    PlaylistLoaded(Result<PlaylistWithTracks, String>),
+    OpenPlaylist(i64),
+    NewPlaylistName(String),
+    CreatePlaylist,
+    /// Open or close the chooser under a track.
+    AddTo(i64),
+    AddingIn(i64, Result<Vec<i64>, String>),
+    AddToPlaylist(i64, i64),
+    /// Make a playlist from the chooser's text and put the track in it.
+    CreateAndAdd(i64),
+    PlaylistChanged(Result<PlaylistWithTracks, String>),
+    RemoveFromPlaylist(i64, usize),
+    DeletePlaylist(i64),
+    PlaylistDeleted(Result<serde_json::Value, String>),
+    PlayPlaylist(i64, usize),
+    AddPlaylist(i64),
+    RadioOn(Option<i64>),
+    RadioOff,
     PlayerState(Result<Player, String>),
     QueueLoaded(Result<Queue, String>),
     LyricsLoaded(i64, Result<Lyrics, String>),
@@ -142,6 +176,12 @@ impl App {
             albums: Vec::new(),
             artists: Vec::new(),
             open_album: None,
+            playlists: Vec::new(),
+            open_playlist: None,
+            list_view: ListView::All,
+            new_playlist: String::new(),
+            adding: None,
+            adding_in: Vec::new(),
             query: String::new(),
             artist_filter: None,
             tab: Tab::Albums,
@@ -166,15 +206,20 @@ impl App {
             app.load_albums(),
             app.load_artists(),
             app.load_player(),
+            app.load_playlists(),
             text_input::focus(text_input::Id::new("search")),
         ];
-        // For screenshots in development: KATALOG_DEBUG_VIEW=album:3 | play:3 | queue | lyrics | artists
+        // For screenshots in development:
+        // KATALOG_DEBUG_VIEW=album:3 | play:3 | playlist:1 | adding:5 | queue | lyrics | artists | playlists | fake
         if let Ok(v) = std::env::var("KATALOG_DEBUG_VIEW") {
             for part in v.split(',') {
                 let msg = match part.split_once(':') {
                     Some(("album", id)) => id.parse().ok().map(Message::OpenAlbum),
                     Some(("play", id)) => id.parse().ok().map(|id| Message::PlayAlbum(id, 0)),
+                    Some(("playlist", id)) => id.parse().ok().map(Message::OpenPlaylist),
+                    Some(("adding", id)) => id.parse().ok().map(Message::AddTo),
                     _ => match part {
+                        "playlists" => Some(Message::Tab(Tab::Playlists)),
                         "queue" => Some(Message::Tab(Tab::Queue)),
                         "lyrics" => Some(Message::Tab(Tab::Lyrics)),
                         "artists" => Some(Message::Tab(Tab::Artists)),
@@ -223,6 +268,28 @@ impl App {
         Task::perform(
             async move { c.get(&format!("/api/tracks/{track_id}/lyrics")).await },
             move |r| Message::LyricsLoaded(track_id, r),
+        )
+    }
+    fn load_playlists(&self) -> Task<Message> {
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.get("/api/playlists").await },
+            Message::Playlists,
+        )
+    }
+    fn load_playlist(&self, id: i64) -> Task<Message> {
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.get(&format!("/api/playlists/{id}")).await },
+            Message::PlaylistLoaded,
+        )
+    }
+    fn playlist_post(&self, path: &str, body: serde_json::Value) -> Task<Message> {
+        let c = self.client.clone();
+        let path = path.to_string();
+        Task::perform(
+            async move { c.post::<PlaylistWithTracks>(&path, Some(body)).await },
+            Message::PlaylistChanged,
         )
     }
     fn load_album(&self, id: i64) -> Task<Message> {
@@ -320,6 +387,7 @@ impl App {
                 };
                 if self.ticks.is_multiple_of(20) {
                     tasks.push(self.load_status());
+                    tasks.push(self.load_playlists());
                 }
                 tasks.push(self.load_visible_art());
                 if self.ticks == 10 && self.screenshot.is_some() {
@@ -374,6 +442,175 @@ impl App {
             Message::AlbumLoaded(Err(e)) => {
                 self.error = Some(e);
                 Task::none()
+            }
+            Message::Playlists(Ok(p)) => {
+                self.playlists = p;
+                Task::none()
+            }
+            Message::Playlists(Err(_)) => Task::none(),
+            Message::PlaylistLoaded(Ok(p)) => {
+                let art: Vec<i64> = p.tracks.iter().filter_map(|t| t.art_id).collect();
+                self.open_playlist = Some(p);
+                Task::batch(art.into_iter().map(|id| self.want_art(id, 128)))
+            }
+            Message::PlaylistLoaded(Err(e)) => {
+                self.error = Some(e);
+                self.list_view = ListView::All;
+                Task::none()
+            }
+            Message::OpenPlaylist(id) => {
+                self.tab = Tab::Playlists;
+                self.list_view = ListView::One(id);
+                self.adding = None;
+                if self.open_playlist.as_ref().map(|p| p.playlist.id) != Some(id) {
+                    self.open_playlist = None;
+                }
+                self.load_playlist(id)
+            }
+            Message::NewPlaylistName(n) => {
+                self.new_playlist = n;
+                Task::none()
+            }
+            Message::CreatePlaylist => {
+                let name = self.new_playlist.trim().to_string();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                self.new_playlist.clear();
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.post::<Playlist>(
+                            "/api/playlists",
+                            Some(serde_json::json!({ "name": name })),
+                        )
+                        .await
+                    },
+                    |r| match r {
+                        Ok(p) => Message::OpenPlaylist(p.id),
+                        Err(e) => Message::Playlists(Err(e)),
+                    },
+                )
+            }
+            Message::AddTo(track_id) => {
+                if self.adding == Some(track_id) {
+                    self.adding = None;
+                    return Task::none();
+                }
+                self.adding = Some(track_id);
+                self.adding_in.clear();
+                self.new_playlist.clear();
+                let c = self.client.clone();
+                Task::batch([
+                    Task::perform(
+                        async move { c.get(&format!("/api/tracks/{track_id}/playlists")).await },
+                        move |r| Message::AddingIn(track_id, r),
+                    ),
+                    self.load_playlists(),
+                ])
+            }
+            Message::AddingIn(track_id, Ok(ids)) => {
+                if self.adding == Some(track_id) {
+                    self.adding_in = ids;
+                }
+                Task::none()
+            }
+            Message::AddingIn(_, Err(_)) => Task::none(),
+            Message::AddToPlaylist(playlist_id, track_id) => {
+                if !self.adding_in.contains(&playlist_id) {
+                    self.adding_in.push(playlist_id);
+                }
+                self.playlist_post(
+                    &format!("/api/playlists/{playlist_id}/tracks"),
+                    serde_json::json!({ "tracks": [track_id] }),
+                )
+            }
+            Message::CreateAndAdd(track_id) => {
+                let name = self.new_playlist.trim().to_string();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                self.new_playlist.clear();
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        let p = c
+                            .post::<Playlist>(
+                                "/api/playlists",
+                                Some(serde_json::json!({ "name": name })),
+                            )
+                            .await?;
+                        c.post::<PlaylistWithTracks>(
+                            &format!("/api/playlists/{}/tracks", p.id),
+                            Some(serde_json::json!({ "tracks": [track_id] })),
+                        )
+                        .await
+                    },
+                    Message::PlaylistChanged,
+                )
+            }
+            Message::PlaylistChanged(Ok(p)) => {
+                if let Some(t) = self.adding {
+                    if p.tracks.iter().any(|x| x.id == t)
+                        && !self.adding_in.contains(&p.playlist.id)
+                    {
+                        self.adding_in.push(p.playlist.id);
+                    }
+                }
+                if self.open_playlist.as_ref().map(|o| o.playlist.id) == Some(p.playlist.id) {
+                    self.open_playlist = Some(p);
+                }
+                self.load_playlists()
+            }
+            Message::PlaylistChanged(Err(e)) => {
+                self.error = Some(e);
+                Task::none()
+            }
+            Message::RemoveFromPlaylist(id, pos) => {
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.delete::<PlaylistWithTracks>(&format!("/api/playlists/{id}/tracks/{pos}"))
+                            .await
+                    },
+                    Message::PlaylistChanged,
+                )
+            }
+            Message::DeletePlaylist(id) => {
+                let c = self.client.clone();
+                self.list_view = ListView::All;
+                self.open_playlist = None;
+                Task::perform(
+                    async move {
+                        c.delete::<serde_json::Value>(&format!("/api/playlists/{id}"))
+                            .await
+                    },
+                    Message::PlaylistDeleted,
+                )
+            }
+            Message::PlaylistDeleted(Ok(_)) => self.load_playlists(),
+            Message::PlaylistDeleted(Err(e)) => {
+                self.error = Some(e);
+                Task::none()
+            }
+            Message::PlayPlaylist(id, start) => self.player_post(
+                "/api/player/play",
+                Some(serde_json::json!({ "playlist": id, "start": start })),
+            ),
+            Message::AddPlaylist(id) => self.player_post(
+                "/api/player/queue",
+                Some(serde_json::json!({ "playlist": id })),
+            ),
+            Message::RadioOn(playlist) => self.player_post(
+                "/api/radio",
+                Some(serde_json::json!({ "playlist": playlist })),
+            ),
+            Message::RadioOff => {
+                let c = self.client.clone();
+                Task::perform(
+                    async move { c.delete::<Player>("/api/radio").await },
+                    Message::PlayerState,
+                )
             }
             Message::PlayerState(Ok(p)) => {
                 let track_changed =
@@ -458,7 +695,7 @@ impl App {
             Message::Search(q) => {
                 self.query = q;
                 self.view = View::Grid;
-                if self.tab == Tab::Queue || self.tab == Tab::Lyrics {
+                if self.tab == Tab::Queue || self.tab == Tab::Lyrics || self.tab == Tab::Playlists {
                     self.tab = Tab::Albums;
                 }
                 self.grid_scroll = 0.0;
@@ -475,7 +712,14 @@ impl App {
                     // Already on Albums, looking at one album: the tab is the way back.
                     self.view = View::Grid;
                 }
+                if t == Tab::Playlists && self.tab == Tab::Playlists {
+                    self.list_view = ListView::All;
+                }
+                self.adding = None;
                 self.tab = t;
+                if t == Tab::Playlists {
+                    return self.load_playlists();
+                }
                 if t == Tab::Queue {
                     return self.load_queue();
                 }
@@ -496,7 +740,11 @@ impl App {
                 self.load_visible_art()
             }
             Message::Back => {
-                if self.view != View::Grid {
+                if self.adding.is_some() {
+                    self.adding = None;
+                } else if self.tab == Tab::Playlists && self.list_view != ListView::All {
+                    self.list_view = ListView::All;
+                } else if self.view != View::Grid {
                     self.view = View::Grid;
                 } else if self.artist_filter.is_some() {
                     self.artist_filter = None;
@@ -556,6 +804,8 @@ impl App {
                     format: Some("44100 Hz · 16 bit · 2 ch".into()),
                     bit_perfect: true,
                     error: None,
+                    radio: None,
+                    notice: None,
                 };
                 self.queue = Some(Queue {
                     index: Some(0),
@@ -613,6 +863,7 @@ impl App {
                     Key::Named(Named::Escape) | Key::Named(Named::Backspace) => Some(Message::Back),
                     Key::Character("n") => Some(Message::Next),
                     Key::Character("p") => Some(Message::Prev),
+                    Key::Character("r") => Some(Message::RadioOn(None)),
                     _ => None,
                 }
             }),
@@ -626,6 +877,10 @@ impl App {
             (Tab::Albums, View::Album(id)) => self.album_view(*id),
             (Tab::Albums, View::Grid) => self.grid_view(),
             (Tab::Artists, _) => self.artists_view(),
+            (Tab::Playlists, _) => match self.list_view {
+                ListView::All => self.playlists_view(),
+                ListView::One(id) => self.playlist_view(id),
+            },
             (Tab::Queue, _) => self.queue_view(),
             (Tab::Lyrics, _) => self.lyrics_view(),
         };
@@ -691,6 +946,12 @@ impl App {
                 self.filtered_artists().len().to_string()
             ),
             Space::with_width(CARD_GAP),
+            self.tab_button(
+                Tab::Playlists,
+                "Playlists",
+                self.playlists.len().to_string()
+            ),
+            Space::with_width(CARD_GAP),
             self.tab_button(Tab::Queue, "Queue", self.player.queue.len().to_string()),
             Space::with_width(CARD_GAP),
             self.tab_button(Tab::Lyrics, "Lyrics", lyrics_note),
@@ -747,7 +1008,7 @@ impl App {
                 if active { 3 } else { 1 }
             )),
         ]
-        .width(Length::Fixed(150.0));
+        .width(Length::Fixed(130.0));
         button(inner)
             .style(style::plain)
             .padding(0)
@@ -906,45 +1167,11 @@ impl App {
         let a = &open.album;
         let side = ((self.width - 2.0 * GUTTER) * 0.36).clamp(240.0, 480.0);
         let cover = self.cover(a.art_id, 640, side, &a.title, &a.artist, a.id);
-        let current = self.player.track.as_ref().map(|t| t.id);
 
         let mut tracks = column![].spacing(0);
         for (i, t) in open.tracks.iter().enumerate() {
-            let is_current = current == Some(t.id);
             let num = t.number.map(|n| n.to_string()).unwrap_or_default();
-            let r = row![
-                container(text(num).size(13).color(alpha(CREAM, 0.7)))
-                    .width(Length::Fixed(36.0))
-                    .align_x(iced::alignment::Horizontal::Right),
-                Space::with_width(16),
-                text(t.title.clone())
-                    .size(15)
-                    .font(if is_current { BLACK } else { MEDIUM })
-                    .line_height(1.2),
-                horizontal_space(),
-                text(if t.has_lyrics { "lyrics" } else { "" })
-                    .size(12)
-                    .color(alpha(CREAM, 0.6)),
-                Space::with_width(16),
-                text(fmt_ms(t.duration_ms)).size(13),
-            ]
-            .align_y(Alignment::End);
-            let b = button(
-                column![
-                    Space::with_height(12),
-                    r,
-                    Space::with_height(6),
-                    horizontal_rule(1).style(style::hairline(alpha(
-                        CREAM,
-                        if is_current { 1.0 } else { 0.5 }
-                    ))),
-                ]
-                .width(Length::Fill),
-            )
-            .style(style::plain)
-            .padding(0)
-            .on_press(Message::PlayAlbum(a.id, i));
-            tracks = tracks.push(b);
+            tracks = tracks.push(self.track_row(t, num, None, Message::PlayAlbum(a.id, i), None));
         }
 
         let meta = format!(
@@ -972,20 +1199,11 @@ impl App {
             .align_y(Alignment::End),
         ];
         let actions = row![
-            button(text("All albums").size(13))
-                .style(style::chip)
-                .padding([6, 12])
-                .on_press(Message::Back),
+            chip("All albums", Message::Back),
             Space::with_width(24),
-            button(text("Play").size(13))
-                .style(style::chip)
-                .padding([6, 12])
-                .on_press(Message::PlayAlbum(a.id, 0)),
+            chip("Play", Message::PlayAlbum(a.id, 0)),
             Space::with_width(8),
-            button(text("Add to queue").size(13))
-                .style(style::chip)
-                .padding([6, 12])
-                .on_press(Message::AddAlbum(a.id)),
+            chip("Add to queue", Message::AddAlbum(a.id)),
             horizontal_space(),
         ];
         let right = column![
@@ -1006,6 +1224,312 @@ impl App {
                 },
             ),
         )
+        .style(style::scroll(CREAM))
+        .height(Length::Fill)
+        .into()
+    }
+
+    /// One track line: a number or position on the left, the title, an
+    /// optional note in the middle, the length and a "+" on the right that
+    /// opens the playlist chooser underneath. `remove` adds a "×" for
+    /// playlist pages.
+    fn track_row<'a>(
+        &'a self,
+        t: &'a Track,
+        left: String,
+        sub: Option<String>,
+        on_press: Message,
+        remove: Option<Message>,
+    ) -> Element<'a, Message> {
+        let is_current = self.player.track.as_ref().map(|x| x.id) == Some(t.id);
+        let op = if is_current { 1.0 } else { 0.8 };
+        let mut r = row![
+            container(text(left).size(13).color(alpha(CREAM, 0.7)))
+                .width(Length::Fixed(36.0))
+                .align_x(iced::alignment::Horizontal::Right),
+            Space::with_width(16),
+            text(t.title.clone())
+                .size(15)
+                .font(if is_current { BLACK } else { MEDIUM })
+                .color(alpha(CREAM, op))
+                .line_height(1.2),
+        ]
+        .align_y(Alignment::End);
+        if let Some(sub) = sub {
+            r = r
+                .push(Space::with_width(16))
+                .push(text(sub).size(13).color(alpha(CREAM, 0.7)).line_height(1.2));
+        }
+        r = r.push(horizontal_space());
+        if t.has_lyrics {
+            r = r
+                .push(text("lyrics").size(12).color(alpha(CREAM, 0.6)))
+                .push(Space::with_width(16));
+        }
+        r = r.push(
+            container(text(fmt_ms(t.duration_ms)).size(13).color(alpha(CREAM, op)))
+                .width(Length::Fixed(44.0))
+                .align_x(iced::alignment::Horizontal::Right),
+        );
+        let adding = self.adding == Some(t.id);
+        let small = |label: &str, m: Message, on: bool| {
+            button(
+                text(label.to_string())
+                    .size(13)
+                    .line_height(1.0)
+                    .color(if on { CREAM } else { alpha(CREAM, 0.6) }),
+            )
+            .style(style::plain)
+            .padding([2, 6])
+            .on_press(m)
+        };
+        r = r
+            .push(Space::with_width(12))
+            .push(small("+", Message::AddTo(t.id), adding));
+        if let Some(m) = remove {
+            r = r.push(small("×", m, false));
+        }
+        let line = button(
+            column![
+                Space::with_height(12),
+                r,
+                Space::with_height(6),
+                horizontal_rule(1).style(style::hairline(alpha(
+                    CREAM,
+                    if is_current { 1.0 } else { 0.5 }
+                ))),
+            ]
+            .width(Length::Fill),
+        )
+        .style(style::plain)
+        .padding(0)
+        .on_press(on_press);
+        if adding {
+            column![line, self.add_chooser(t.id)].into()
+        } else {
+            line.into()
+        }
+    }
+
+    /// Under a track: its playlists in bold, the others to click, and a box
+    /// for a new one. Enter makes the playlist and puts the track in.
+    fn add_chooser(&self, track_id: i64) -> Element<'_, Message> {
+        let mut chips = row![].spacing(8).align_y(Alignment::Center);
+        chips = chips.push(
+            text("Add to")
+                .size(13)
+                .color(alpha(CREAM, 0.7))
+                .line_height(1.0),
+        );
+        for p in &self.playlists {
+            let has = self.adding_in.contains(&p.id);
+            let b = button(
+                text(p.name.clone())
+                    .size(13)
+                    .font(if has { BOLD } else { MEDIUM })
+                    .line_height(1.0),
+            )
+            .style(style::chip)
+            .padding([4, 10]);
+            chips = chips.push(if has {
+                b
+            } else {
+                b.on_press(Message::AddToPlaylist(p.id, track_id))
+            });
+        }
+        let new = text_input("New playlist", &self.new_playlist)
+            .id(text_input::Id::new("new-in-chooser"))
+            .on_input(Message::NewPlaylistName)
+            .on_submit(Message::CreateAndAdd(track_id))
+            .size(13)
+            .padding([4, 8])
+            .width(Length::Fixed(160.0))
+            .style(style::search);
+        chips = chips.push(
+            column![
+                new,
+                horizontal_rule(1).style(style::hairline(alpha(CREAM, 0.6)))
+            ]
+            .width(Length::Fixed(160.0)),
+        );
+        container(chips)
+            .padding(iced::Padding {
+                top: 10.0,
+                right: 0.0,
+                bottom: 10.0,
+                left: 52.0,
+            })
+            .width(Length::Fill)
+            .into()
+    }
+
+    fn playlists_view(&self) -> Element<'_, Message> {
+        let new = text_input("New playlist", &self.new_playlist)
+            .id(text_input::Id::new("new-playlist"))
+            .on_input(Message::NewPlaylistName)
+            .on_submit(Message::CreatePlaylist)
+            .size(15)
+            .padding([4, 0])
+            .style(style::search);
+        let head = row![
+            column![new, horizontal_rule(1).style(style::hairline(CREAM))]
+                .width(Length::Fixed(280.0)),
+            Space::with_width(16),
+            chip("Make it", Message::CreatePlaylist),
+            horizontal_space(),
+            chip(
+                if self.player.radio.is_some() {
+                    "Radio off"
+                } else {
+                    "Radio: everything"
+                },
+                if self.player.radio.is_some() {
+                    Message::RadioOff
+                } else {
+                    Message::RadioOn(None)
+                }
+            ),
+        ]
+        .align_y(Alignment::Center);
+
+        let mut list = column![head, Space::with_height(24)];
+        if self.playlists.is_empty() {
+            list = list.push(
+                text("No playlists yet. Name one above, or press + on any song.")
+                    .size(15)
+                    .color(alpha(CREAM, 0.8)),
+            );
+        }
+        for p in &self.playlists {
+            let on_air = self.player.radio.as_ref().map(|r| r.playlist) == Some(Some(p.id));
+            let r = row![
+                text(p.name.clone()).size(20).line_height(1.1),
+                Space::with_width(12),
+                text(if on_air { "on air" } else { "" })
+                    .size(12)
+                    .color(alpha(CREAM, 0.7)),
+                horizontal_space(),
+                text(format!(
+                    "{} {} · {}",
+                    p.track_count,
+                    if p.track_count == 1 {
+                        "track"
+                    } else {
+                        "tracks"
+                    },
+                    fmt_long(p.duration_ms)
+                ))
+                .size(13)
+                .color(alpha(CREAM, 0.8)),
+            ]
+            .align_y(Alignment::End);
+            list = list.push(
+                button(
+                    column![
+                        Space::with_height(14),
+                        r,
+                        Space::with_height(6),
+                        horizontal_rule(1).style(style::hairline(CREAM)),
+                    ]
+                    .width(Length::Fill),
+                )
+                .style(style::plain)
+                .padding(0)
+                .on_press(Message::OpenPlaylist(p.id)),
+            );
+        }
+        scrollable(container(list).padding(iced::Padding {
+            top: 24.0,
+            right: GUTTER,
+            bottom: 48.0,
+            left: GUTTER,
+        }))
+        .style(style::scroll(CREAM))
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn playlist_view(&self, id: i64) -> Element<'_, Message> {
+        let Some(open) = self.open_playlist.as_ref().filter(|p| p.playlist.id == id) else {
+            return container(text("").size(15)).height(Length::Fill).into();
+        };
+        let p = &open.playlist;
+        let on_air = self.player.radio.as_ref().map(|r| r.playlist) == Some(Some(p.id));
+        let meta = format!(
+            "{} {} · {}",
+            p.track_count,
+            if p.track_count == 1 {
+                "track"
+            } else {
+                "tracks"
+            },
+            fmt_long(p.duration_ms)
+        );
+        let title = column![
+            text(p.name.clone())
+                .size(if p.name.len() > 28 { 32 } else { 44 })
+                .font(BLACK)
+                .line_height(0.9),
+            Space::with_height(10),
+            horizontal_rule(2).style(style::rule_px(CREAM, 2)),
+            Space::with_height(8),
+            row![
+                text(if on_air { "on air" } else { "playlist" })
+                    .size(15)
+                    .line_height(1.2),
+                horizontal_space(),
+                text(meta).size(13).color(alpha(CREAM, 0.85)),
+            ]
+            .align_y(Alignment::End),
+        ];
+        let mut actions = row![
+            chip("All playlists", Message::Back),
+            Space::with_width(24),
+            chip("Play", Message::PlayPlaylist(p.id, 0)),
+            Space::with_width(8),
+            chip("Add to queue", Message::AddPlaylist(p.id)),
+            Space::with_width(8),
+        ];
+        actions = actions.push(if on_air {
+            chip("Radio off", Message::RadioOff)
+        } else {
+            chip("Radio", Message::RadioOn(Some(p.id)))
+        });
+        actions = actions
+            .push(horizontal_space())
+            .push(chip("Delete", Message::DeletePlaylist(p.id)));
+
+        let mut tracks = column![].spacing(0);
+        if open.tracks.is_empty() {
+            tracks = tracks.push(
+                text("Nothing in it yet. Press + on a song in an album or the queue.")
+                    .size(15)
+                    .color(alpha(CREAM, 0.8)),
+            );
+        }
+        for (i, t) in open.tracks.iter().enumerate() {
+            tracks = tracks.push(self.track_row(
+                t,
+                (i + 1).to_string(),
+                Some(format!("{} · {}", t.artist, t.album)),
+                Message::PlayPlaylist(p.id, i),
+                Some(Message::RemoveFromPlaylist(p.id, i)),
+            ));
+        }
+        let body = column![
+            title,
+            Space::with_height(24),
+            actions,
+            Space::with_height(24),
+            tracks
+        ]
+        .width(Length::Fill);
+        scrollable(container(body).padding(iced::Padding {
+            top: 40.0,
+            right: GUTTER,
+            bottom: 48.0,
+            left: GUTTER,
+        }))
         .style(style::scroll(CREAM))
         .height(Length::Fill)
         .into()
@@ -1060,7 +1584,7 @@ impl App {
     fn queue_view(&self) -> Element<'_, Message> {
         let Some(q) = &self.queue else {
             return container(
-                text("Nothing queued. Open an album and press Play.")
+                text("Nothing queued. Open an album and press Play, or press r for the radio.")
                     .size(15)
                     .color(alpha(CREAM, 0.8)),
             )
@@ -1068,47 +1592,29 @@ impl App {
             .height(Length::Fill)
             .into();
         };
-        let current = self.player.index;
         let mut list = column![];
-        for (i, t) in q.tracks.iter().enumerate() {
-            let is_current = current == Some(i);
-            let op = if is_current { 1.0 } else { 0.75 };
-            let r = row![
-                container(text((i + 1).to_string()).size(13).color(alpha(CREAM, 0.7)))
-                    .width(Length::Fixed(36.0))
-                    .align_x(iced::alignment::Horizontal::Right),
-                Space::with_width(16),
-                text(t.title.clone())
-                    .size(15)
-                    .font(if is_current { BLACK } else { MEDIUM })
-                    .color(alpha(CREAM, op))
-                    .line_height(1.2),
-                Space::with_width(16),
-                text(format!("{} · {}", t.artist, t.album))
-                    .size(13)
-                    .color(alpha(CREAM, 0.7))
-                    .line_height(1.2),
-                horizontal_space(),
-                text(fmt_ms(t.duration_ms)).size(13).color(alpha(CREAM, op)),
-            ]
-            .align_y(Alignment::End);
+        if let Some(r) = &self.player.radio {
             list = list.push(
-                button(
-                    column![
-                        Space::with_height(12),
-                        r,
-                        Space::with_height(6),
-                        horizontal_rule(1).style(style::hairline(alpha(
-                            CREAM,
-                            if is_current { 1.0 } else { 0.5 }
-                        ))),
-                    ]
-                    .width(Length::Fill),
-                )
-                .style(style::plain)
-                .padding(0)
-                .on_press(Message::Jump(i)),
+                row![
+                    text(format!("Radio: {}", r.name))
+                        .size(15)
+                        .color(alpha(CREAM, 0.85)),
+                    Space::with_width(16),
+                    chip("Off", Message::RadioOff),
+                    horizontal_space(),
+                ]
+                .align_y(Alignment::Center),
             );
+            list = list.push(Space::with_height(8));
+        }
+        for (i, t) in q.tracks.iter().enumerate() {
+            list = list.push(self.track_row(
+                t,
+                (i + 1).to_string(),
+                Some(format!("{} · {}", t.artist, t.album)),
+                Message::Jump(i),
+                None,
+            ));
         }
         scrollable(container(list).padding(iced::Padding {
             top: 24.0,
@@ -1320,6 +1826,12 @@ impl App {
         if let (Some(i), false) = (p.index, p.queue.is_empty()) {
             detail_parts.push(format!("{}/{} in queue", i + 1, p.queue.len()));
         }
+        if let Some(r) = &p.radio {
+            detail_parts.push(format!("radio: {}", r.name));
+        }
+        if let Some(n) = &p.notice {
+            detail_parts.push(n.clone());
+        }
         if let Some(e) = &p.error {
             detail_parts.push(e.clone());
         }
@@ -1382,6 +1894,14 @@ impl App {
 }
 
 const LYRIC_LINE_H: f32 = 38.0;
+
+/// An outlined button in the running text size.
+fn chip<'a>(label: &str, m: Message) -> iced::widget::Button<'a, Message> {
+    button(text(label.to_string()).size(13))
+        .style(style::chip)
+        .padding([6, 12])
+        .on_press(m)
+}
 
 /// "1977" is that year, "197" the whole decade, "70s" and "1970s" too,
 /// "1975-1980" a range.

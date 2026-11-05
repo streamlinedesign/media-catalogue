@@ -42,7 +42,8 @@ is playing. Albums as a grid of covers (typographic placeholders where there is 
 album page with its tracks, artists, the queue, and lyrics that follow the song and jump when
 you click a line. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
 It holds no library state of its own: everything comes from katalogd, so it can run on another
-machine than the music.
+machine than the music. Space plays and pauses, `n` and `p` skip, `r` puts the radio on, Esc and
+Backspace go back.
 
 The window needs the usual Wayland/X11 libraries at run time (`libxkbcommon`, `wayland`,
 `libX11`, `vulkan-loader` or `libGL`), which any desktop has; the flake wraps them in.
@@ -69,7 +70,31 @@ without a gap when they share a format. The card is released when the queue ends
 so other programs can use it. Use `--device default` to go through dmix or PipeWire instead.
 
 Every start is recorded in the `plays` table, and a track counts as finished once half of it
-has played. This is what playlists and the radio will be built on.
+has played. The radio reads that table.
+
+### Playlists and the radio
+
+    katalog playlist-new chill
+    katalog playlist-add chill 340 341 --album 12
+    katalog playlist chill             # its tracks; playlist-remove chill 3 takes one out
+    katalog playlists                  # playlist-rename, playlist-delete do what they say
+    katalog play --playlist chill      # or add --playlist chill
+    katalog radio chill                # something on, from that playlist
+    katalog radio                      # from the whole library
+    katalog radio --off
+
+The radio keeps the queue one track ahead, picked at random from the playlist or the library:
+nothing heard in the last three days, never the same artist twice in a row, and nothing from
+the last fifty picks. When a small playlist runs dry those rules relax one by one rather than
+stop the music. It stays on until you say `--off`, press Play on something else, or the window's
+Radio off.
+
+The loop guard is always on: a track may play three times in a row, and the fourth start
+(play, prev, a restart) moves on to the next one instead. `katalog now` and the window say so.
+
+In the window: a Playlists tab with a box for a new name, a page per playlist with Play, Add to
+queue, Radio and Delete, a `+` on every song that opens a row of your playlists (bold where it
+already is) and a box for a new one, and `r` turns the radio on for everything.
 
 ### Flags
 
@@ -131,11 +156,20 @@ the flake's `lib.userService` instead.
     GET  /api/player                   state, track, position, queue ids, format, bit_perfect
     GET  /api/player/queue             the queue as tracks, with the current index
     GET  /api/player/devices           ALSA outputs
-    POST /api/player/play              {"tracks":[..]} or {"album":id} or {"artist":id}, "start":n
+    POST /api/player/play              {"tracks":[..]} or {"album":id} or {"artist":id} or {"playlist":id}, "start":n
     POST /api/player/queue             same body, appended
     DELETE /api/player/queue           clear;  DELETE /api/player/queue/{index} removes one
     POST /api/player/{pause|resume|toggle|stop|next|prev}
     POST /api/player/seek?ms=          POST /api/player/volume?v=0..1   POST /api/player/jump?index=
+
+    GET  /api/playlists                name, track count, length
+    POST /api/playlists                {"name": "chill"}
+    GET  /api/playlists/{id}           with its tracks in order
+    PUT  /api/playlists/{id}           {"name": "..."} rename;  DELETE /api/playlists/{id}
+    POST /api/playlists/{id}/tracks    {"tracks":[..]} or {"album":id} or {"artist":id}, appended, no duplicates
+    DELETE /api/playlists/{id}/tracks/{position}
+    GET  /api/tracks/{id}/playlists    ids of the playlists a track is in
+    POST /api/radio                    {"playlist": id} or {} for everything;  DELETE /api/radio turns it off
 
 All answers are JSON except `/art` and `/stream`. CORS is open, so a web view can talk to it directly.
 
@@ -156,4 +190,6 @@ All answers are JSON except `/art` and `/stream`. CORS is open, so a web view ca
 | `artists`, `albums`, `tracks` | The library. `tracks.path` is unique; `albums` are keyed by artist, title and folder |
 | `art` | Images, deduplicated by hash |
 | `lyrics` | One text per track, synced or plain, with its source |
-| `plays`, `track_tags`, `playlists` | Ready for the player and radio milestones |
+| `plays` | Every start, with its source (manual, playlist, radio) and whether it got half way |
+| `playlists`, `playlist_tracks` | Your lists, in order |
+| `track_tags` | Reserved for your own words on tracks |
