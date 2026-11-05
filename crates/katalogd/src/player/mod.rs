@@ -10,6 +10,7 @@
 //! The loop guard lets a track play three times in a row, then moves on.
 
 pub mod decode;
+pub mod levels;
 pub mod output;
 
 use anyhow::{Context, Result};
@@ -122,6 +123,7 @@ pub enum Cmd {
 pub struct Player {
     tx: Sender<Cmd>,
     status: Arc<Mutex<Status>>,
+    levels: levels::Shared,
 }
 
 impl Player {
@@ -145,11 +147,13 @@ impl Player {
             notice: None,
         }));
         let st = status.clone();
+        let levels = levels::shared();
+        let meter = levels::Meter::new(levels.clone());
         std::thread::Builder::new()
             .name("player".into())
-            .spawn(move || Engine::new(conn, device, rx, st).run())
+            .spawn(move || Engine::new(conn, device, rx, st, meter).run())
             .context("spawn player thread")?;
-        Ok(Self { tx, status })
+        Ok(Self { tx, status, levels })
     }
 
     pub fn send(&self, cmd: Cmd) -> Result<()> {
@@ -160,6 +164,14 @@ impl Player {
 
     pub fn status(&self) -> Status {
         self.status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// The spectrum as it sounds now, one value per band, 0.0 to 1.0.
+    pub fn levels(&self) -> Vec<f32> {
+        self.levels
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
@@ -185,6 +197,7 @@ struct Engine {
     last_started: Option<i64>,
     streak: u32,
     notice: Option<String>,
+    meter: levels::Meter,
 }
 
 struct Current {
@@ -202,6 +215,7 @@ impl Engine {
         device: String,
         rx: Receiver<Cmd>,
         status: Arc<Mutex<Status>>,
+        meter: levels::Meter,
     ) -> Self {
         Self {
             conn,
@@ -220,6 +234,7 @@ impl Engine {
             last_started: None,
             streak: 0,
             notice: None,
+            meter,
         }
     }
 
@@ -567,7 +582,10 @@ impl Engine {
                     self.sink = None;
                     self.ensure_sink(spec)?;
                 }
-                self.sink.as_mut().unwrap().write(&samples)?;
+                let sink = self.sink.as_mut().unwrap();
+                sink.write(&samples)?;
+                self.meter.feed(&samples, spec.channels as usize, spec.rate);
+                self.meter.heard(sink.delay_frames());
                 if let Some(cur) = self.current.as_mut() {
                     cur.frames_out += frames as u64;
                     if !cur.finished_marked && cur.track.duration_ms > 0 {
@@ -620,6 +638,7 @@ impl Engine {
                     Err(e) => return Err(e),
                 };
                 self.sink = Some(sink);
+                self.meter.reset();
                 Ok(())
             }
         }
@@ -627,6 +646,7 @@ impl Engine {
 
     fn close_sink(&mut self) {
         self.sink = None;
+        self.meter.reset();
     }
 
     fn set_paused(&mut self, paused: bool) {
@@ -634,6 +654,9 @@ impl Engine {
             return;
         }
         self.paused = paused;
+        if paused {
+            self.meter.reset();
+        }
         let Some(sink) = self.sink.as_mut() else {
             return;
         };
@@ -665,6 +688,7 @@ impl Engine {
         cur.frames_out = landed * cur.decoder.spec.rate as u64 / 1000;
         if let Some(s) = self.sink.as_mut() {
             s.flush();
+            self.meter.reset();
             if self.paused {
                 // Keep the card quiet until resume.
                 s.pause();

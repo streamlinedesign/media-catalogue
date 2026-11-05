@@ -42,6 +42,11 @@ is playing. Albums as a grid of covers (typographic placeholders where there is 
 album page with its tracks, artists, the queue, and lyrics that follow the song and jump when
 you click a line. When a song has no lyrics the Lyrics tab offers the LRCLIB search: edit the
 words, search with or without the artist, click a hit to keep it. Space plays and pauses, `n` and `p` skip, Esc goes back, and typing searches.
+Home, the first screen, is a dashboard in another register: green on black in IBM Plex Mono,
+the cover tinted to match, a spectrum that follows the sound, the keys, what comes next, four
+albums picked for the one playing (same genre, same artist, a wildcard, same century), five
+lines of lyrics, and a receiver: each playlist is a station on the dial, and power and tuning
+drive the radio.
 It holds no library state of its own: everything comes from katalogd, so it can run on another
 machine than the music. Space plays and pauses, `n` and `p` skip, `-` and `+` set the volume, `r` puts the radio on, Esc and
 Backspace go back.
@@ -144,6 +149,8 @@ the flake's `lib.userService` instead.
     GET  /api/artists?q=
     GET  /api/albums?q=&artist=<id>
     GET  /api/albums/{id}              album with its tracks
+    GET  /api/albums/{id}/picks        four albums to go with it, each with "why": same genre,
+                                       same artist, wildcard, same century
     GET  /api/tracks?q=&album=<id>&limit=
     GET  /api/tracks/{id}
     GET  /api/tracks/{id}/lyrics
@@ -157,6 +164,7 @@ the flake's `lib.userService` instead.
     GET  /api/player                   state, track, position, queue ids, format, bit_perfect
     GET  /api/player/queue             the queue as tracks, with the current index
     GET  /api/player/devices           ALSA outputs
+    GET  /api/player/levels            {"bands":[..]} 32 bars, 0..1, low to high, in time with what is heard
     POST /api/player/play              {"tracks":[..]} or {"album":id} or {"artist":id} or {"playlist":id}, "start":n
     POST /api/player/queue             same body, appended
     DELETE /api/player/queue           clear;  DELETE /api/player/queue/{index} removes one

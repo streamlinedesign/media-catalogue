@@ -201,3 +201,65 @@ pub fn scroll(color: Color) -> impl Fn(&Theme, scrollable::Status) -> scrollable
         }
     }
 }
+
+// ---- Home: green phosphor on black, IBM Plex Mono -------------------------
+
+pub const PLEX_LIGHT: &[u8] = include_bytes!("../fonts/IBMPlexMono-Light.ttf");
+pub const PLEX_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
+pub const PLEX_MEDIUM: &[u8] = include_bytes!("../fonts/IBMPlexMono-Medium.ttf");
+
+const fn plex(w: Weight) -> Font {
+    Font {
+        family: Family::Name("IBM Plex Mono"),
+        weight: w,
+        stretch: iced::font::Stretch::Normal,
+        style: iced::font::Style::Normal,
+    }
+}
+pub const MONO_LIGHT: Font = plex(Weight::Light);
+pub const MONO: Font = plex(Weight::Normal);
+pub const MONO_MEDIUM: Font = plex(Weight::Medium);
+
+/// The screen.
+pub const SCREEN: Color = hex(0x050505);
+/// Lit phosphor: text that matters, bars, the needle.
+pub const PHOSPHOR: Color = hex(0x4dff91);
+/// Half lit: labels and secondary text.
+pub const PHOSPHOR_DIM: Color = hex(0x3fa86a);
+/// Barely lit: rules, borders, unlit segments.
+pub const PHOSPHOR_LINE: Color = hex(0x163d26);
+
+/// Text-only button on the screen: dim, lit on hover.
+pub fn screen_link(color: Color) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => PHOSPHOR,
+            _ => color,
+        },
+        border: Border::default(),
+        shadow: Default::default(),
+    }
+}
+
+/// A square key with a dim outline that lights on hover.
+pub fn screen_key(_theme: &Theme, status: button::Status) -> button::Style {
+    let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: Some(
+            if matches!(status, button::Status::Pressed) {
+                PHOSPHOR_LINE
+            } else {
+                Color::TRANSPARENT
+            }
+            .into(),
+        ),
+        text_color: PHOSPHOR,
+        border: Border {
+            color: if lit { PHOSPHOR } else { PHOSPHOR_LINE },
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        shadow: Default::default(),
+    }
+}

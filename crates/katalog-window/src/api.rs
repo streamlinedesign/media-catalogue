@@ -15,6 +15,20 @@ pub struct Album {
     pub duration_ms: i64,
 }
 
+/// An album on the Home shelf and the rule that picked it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Pick {
+    #[serde(flatten)]
+    pub album: Album,
+    pub why: String,
+}
+
+/// The spectrum, low to high, 0.0 to 1.0.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+pub struct Levels {
+    pub bands: Vec<f32>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Artist {
     pub id: i64,

@@ -10,12 +10,13 @@
 //!   space: play/pause   n / p: next, previous   + / -: volume   r: radio   esc: back
 
 mod api;
+mod home;
 mod icons;
 mod style;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Lyrics, LyricsHit, PlayState, Player,
-    Playlist, PlaylistWithTracks, Queue, Status, Track,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Levels, Lyrics, LyricsHit, Pick,
+    PlayState, Player, Playlist, PlaylistWithTracks, Queue, Status, Track,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -48,9 +49,12 @@ fn main() -> iced::Result {
         .font(style::SATOSHI_MEDIUM)
         .font(style::SATOSHI_BOLD)
         .font(style::SATOSHI_BLACK)
+        .font(style::PLEX_LIGHT)
+        .font(style::PLEX_REGULAR)
+        .font(style::PLEX_MEDIUM)
         .default_font(MEDIUM)
         .antialiasing(true)
-        .window_size(Size::new(1280.0, 840.0))
+        .window_size(Size::new(1440.0, 900.0))
         .run_with(move || App::new(args.url.clone()))
 }
 
@@ -64,6 +68,7 @@ const THUMB: u32 = 320;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Home,
     Albums,
     Artists,
     Playlists,
@@ -123,6 +128,17 @@ struct App {
     screenshot: Option<String>,
     fake: bool,
     fake_nolyrics: bool,
+    height: f32,
+    /// Home: the spectrum, the shelf and for which album, the green covers,
+    /// the list on the right, the station the receiver is tuned to.
+    levels: Vec<f32>,
+    picks: Vec<Pick>,
+    picks_for: Option<i64>,
+    queued_albums: HashSet<i64>,
+    art_green: HashMap<i64, image::Handle>,
+    art_green_loading: HashSet<i64>,
+    side: home::Side,
+    tuned: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +198,15 @@ enum Message {
     DebugFake,
     DebugNoLyrics,
     Shot(window::Screenshot),
+    LevelsTick,
+    Levels(Result<Levels, String>),
+    Picks(i64, Result<Vec<Pick>, String>),
+    QueueAlbum(i64),
+    ArtGreen(i64, Result<Vec<u8>, String>),
+    Side(home::Side),
+    /// Move the receiver this many stations; on air, the radio follows.
+    Tune(i32),
+    Power,
 }
 
 impl App {
@@ -201,7 +226,7 @@ impl App {
             adding_in: Vec::new(),
             query: String::new(),
             artist_filter: None,
-            tab: Tab::Albums,
+            tab: Tab::Home,
             view: View::Grid,
             player: Player::default(),
             queue: None,
@@ -223,6 +248,15 @@ impl App {
             screenshot: std::env::var("KATALOG_SCREENSHOT").ok(),
             fake: false,
             fake_nolyrics: false,
+            height: 900.0,
+            levels: Vec::new(),
+            picks: Vec::new(),
+            picks_for: None,
+            queued_albums: HashSet::new(),
+            art_green: HashMap::new(),
+            art_green_loading: HashSet::new(),
+            side: home::Side::Next,
+            tuned: 0,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -243,6 +277,10 @@ impl App {
                     Some(("adding", id)) => id.parse().ok().map(Message::AddTo),
                     _ => match part {
                         "playlists" => Some(Message::Tab(Tab::Playlists)),
+                        "home" => Some(Message::Tab(Tab::Home)),
+                        "albums" => Some(Message::Tab(Tab::Albums)),
+                        "foryou" => Some(Message::Side(home::Side::ForYou)),
+                        "lists" => Some(Message::Side(home::Side::Playlists)),
                         "queue" => Some(Message::Tab(Tab::Queue)),
                         "lyrics" => Some(Message::Tab(Tab::Lyrics)),
                         "artists" => Some(Message::Tab(Tab::Artists)),
@@ -353,6 +391,27 @@ impl App {
         Task::perform(
             async move { c.post::<Player>(&path, body).await },
             Message::PlayerState,
+        )
+    }
+
+    /// The cover for Home, tinted to the screen, asked for once.
+    fn want_green(&mut self, art_id: i64) -> Task<Message> {
+        if self.art_green.contains_key(&art_id) || !self.art_green_loading.insert(art_id) {
+            return Task::none();
+        }
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.bytes(&format!("/art/{art_id}?size=640&crop=1")).await },
+            move |r| Message::ArtGreen(art_id, r),
+        )
+    }
+    fn load_picks(&mut self, album_id: i64) -> Task<Message> {
+        self.picks_for = Some(album_id);
+        self.queued_albums.clear();
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.get(&format!("/api/albums/{album_id}/picks")).await },
+            move |r| Message::Picks(album_id, r),
         )
     }
 
@@ -667,9 +726,25 @@ impl App {
                 self.player = p;
                 self.error = None;
                 let mut tasks = Vec::new();
+                if self.player.state != PlayState::Playing {
+                    self.levels.clear();
+                }
+                if let Some(r) = &self.player.radio {
+                    let at = self
+                        .stations()
+                        .iter()
+                        .position(|s| s.playlist == r.playlist);
+                    if let Some(i) = at {
+                        self.tuned = i;
+                    }
+                }
                 if let Some(t) = self.player.track.clone() {
                     if let Some(a) = t.art_id {
                         tasks.push(self.want_art(a, 128));
+                        tasks.push(self.want_green(a));
+                    }
+                    if self.picks_for != Some(t.album_id) {
+                        tasks.push(self.load_picks(t.album_id));
                     }
                     if track_changed || self.lyrics_for != Some(t.id) {
                         self.lyrics = None;
@@ -915,8 +990,9 @@ impl App {
                 self.grid_height = v.bounds().height;
                 self.load_visible_art()
             }
-            Message::Resized(w, _h) => {
+            Message::Resized(w, h) => {
                 self.width = w;
+                self.height = h;
                 self.load_visible_art()
             }
             // Development only: pretend the first track of the open album is playing,
@@ -959,10 +1035,21 @@ impl App {
                     text: "[00:12.00]In the next world war\n[00:17.50]In a jackknifed juggernaut\n[00:22.00]I am born again\n[00:48.00]In the neon sign\n[00:52.00]Scrolling up and down\n[00:56.00]I am born again\n[01:30.00]In an interstellar burst\n[01:35.00]I am back to save the universe\n[02:10.00]In a deep deep sleep of the innocent\n[02:15.00]I am born again\n[02:40.00]In a fast German car\n[02:44.00]I'm amazed that I survived\n[02:48.00]An airbag saved my life".into(),
                 });
                 self.lyrics_line = Some(6);
-                if self.fake_nolyrics {
-                    return Task::done(Message::DebugNoLyrics);
+                self.levels = (0..32)
+                    .map(|i| {
+                        let f = i as f32 / 31.0;
+                        (0.85 - 0.55 * f + 0.2 * (-((f - 0.42) / 0.12).powi(2)).exp())
+                            * (0.6 + 0.3 * (i as f32 * 1.7).sin().abs())
+                    })
+                    .collect();
+                let mut tasks = vec![self.load_picks(t.album_id)];
+                if let Some(a) = t.art_id {
+                    tasks.push(self.want_green(a));
                 }
-                Task::none()
+                if self.fake_nolyrics {
+                    tasks.push(Task::done(Message::DebugNoLyrics));
+                }
+                Task::batch(tasks)
             }
             Message::DebugNoLyrics => {
                 self.fake_nolyrics = true;
@@ -973,6 +1060,82 @@ impl App {
                     self.lyrics_query = t.title.clone();
                 }
                 Task::none()
+            }
+            Message::LevelsTick => {
+                let c = self.client.clone();
+                Task::perform(
+                    async move { c.get("/api/player/levels").await },
+                    Message::Levels,
+                )
+            }
+            Message::Levels(Ok(l)) => {
+                if self.player.state != PlayState::Playing {
+                    return Task::none();
+                }
+                // Up at once, down gently, so the bars do not flicker.
+                if self.levels.len() != l.bands.len() {
+                    self.levels = l.bands;
+                } else {
+                    for (old, new) in self.levels.iter_mut().zip(l.bands) {
+                        *old = if new >= *old {
+                            new
+                        } else {
+                            *old * 0.6 + new * 0.4
+                        };
+                    }
+                }
+                Task::none()
+            }
+            Message::Levels(Err(_)) => Task::none(),
+            Message::Picks(album, Ok(p)) => {
+                if self.picks_for == Some(album) {
+                    self.picks = p;
+                }
+                Task::none()
+            }
+            Message::Picks(_, Err(_)) => Task::none(),
+            Message::QueueAlbum(id) => {
+                self.queued_albums.insert(id);
+                self.player_post(
+                    "/api/player/queue",
+                    Some(serde_json::json!({ "album": id })),
+                )
+            }
+            Message::ArtGreen(id, Ok(bytes)) => {
+                self.art_green_loading.remove(&id);
+                if let Some(h) = home::phosphor(&bytes) {
+                    self.art_green.insert(id, h);
+                }
+                Task::none()
+            }
+            Message::ArtGreen(id, Err(_)) => {
+                self.art_green_loading.remove(&id);
+                Task::none()
+            }
+            Message::Side(s) => {
+                self.side = s;
+                if s == home::Side::Next {
+                    return self.load_queue();
+                }
+                Task::none()
+            }
+            Message::Tune(by) => {
+                let stations = self.stations();
+                let n = stations.len() as i32;
+                self.tuned = (self.tuned as i32 + by).rem_euclid(n) as usize;
+                if self.player.radio.is_some() {
+                    let pl = stations[self.tuned].playlist;
+                    return Task::done(Message::RadioOn(pl));
+                }
+                Task::none()
+            }
+            Message::Power => {
+                if self.player.radio.is_some() {
+                    Task::done(Message::RadioOff)
+                } else {
+                    let pl = self.stations().get(self.tuned).and_then(|s| s.playlist);
+                    Task::done(Message::RadioOn(pl))
+                }
             }
             Message::Shot(shot) => {
                 if let Some(path) = self.screenshot.take() {
@@ -995,7 +1158,14 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        let spectrum =
+            if self.tab == Tab::Home && self.player.state == PlayState::Playing && !self.fake {
+                iced::time::every(Duration::from_millis(66)).map(|_| Message::LevelsTick)
+            } else {
+                Subscription::none()
+            };
         Subscription::batch([
+            spectrum,
             iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
             iced::event::listen_with(|event, _status, _id| match event {
                 iced::Event::Window(window::Event::Resized(size)) => {
@@ -1028,7 +1198,11 @@ impl App {
     // ---- view ------------------------------------------------------------
 
     fn view(&self) -> Element<'_, Message> {
+        if self.tab == Tab::Home {
+            return self.home_view();
+        }
         let body: Element<Message> = match (self.tab, &self.view) {
+            (Tab::Home, _) => unreachable!("drawn above"),
             (Tab::Albums, View::Album(id)) => self.album_view(*id),
             (Tab::Albums, View::Grid) => self.grid_view(),
             (Tab::Artists, _) => self.artists_view(),
@@ -1089,6 +1263,8 @@ impl App {
             None => String::new(),
         };
         let tabs = row![
+            self.tab_button(Tab::Home, "Home", String::new()),
+            Space::with_width(CARD_GAP),
             self.tab_button(
                 Tab::Albums,
                 "Albums",
