@@ -14,10 +14,8 @@
 - Window polish: numbers on one baseline, a right-click menu on tracks and
   albums
 - Reorder a playlist by dragging; `katalog playlist-move`
-- Radio: a rest period and keep-count you can set; stations from tags once
-  `track_tags` is in use
+- Stations from tags once `track_tags` is in use
 
-- Stations that run all the time on a schedule, so tuning in joins mid-song
 - A stream address per station for mpv, VLC or a phone on the network
 - A CRT overlay for the window (scanlines, vignette; curvature on the GPU)
 
@@ -27,6 +25,7 @@
 
 ## Done
 
+- 0.5.0: stations, always on, joined live
 - 0.4.0: the Home tab, the spectrum feed, album picks
 - 0.3.0: playlists, the radio, the loop guard, add-to-playlist on every song
 - 0.2.0: the desktop window, cropped covers, decade search, a way back from an album

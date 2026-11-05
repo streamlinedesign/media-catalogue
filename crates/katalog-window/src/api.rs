@@ -23,6 +23,24 @@ pub struct Pick {
     pub why: String,
 }
 
+/// A station and what is on it now.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct OnAir {
+    pub playlist: Option<i64>,
+    pub name: String,
+    pub tracks: usize,
+    pub now: Option<OnAirTrack>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct OnAirTrack {
+    pub track_id: i64,
+    pub title: String,
+    pub artist: String,
+    pub position_ms: i64,
+    pub duration_ms: i64,
+}
+
 /// The spectrum, low to high, 0.0 to 1.0.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 pub struct Levels {

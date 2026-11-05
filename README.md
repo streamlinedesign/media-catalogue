@@ -76,7 +76,7 @@ without a gap when they share a format. The card is released when the queue ends
 so other programs can use it. Use `--device default` to go through dmix or PipeWire instead.
 
 Every start is recorded in the `plays` table, and a track counts as finished once half of it
-has played. The radio reads that table.
+has played.
 
 ### Playlists and the radio
 
@@ -85,15 +85,18 @@ has played. The radio reads that table.
     katalog playlist chill             # its tracks; playlist-remove chill 3 takes one out
     katalog playlists                  # playlist-rename, playlist-delete do what they say
     katalog play --playlist chill      # or add --playlist chill
-    katalog radio chill                # something on, from that playlist
-    katalog radio                      # from the whole library
+    katalog stations                   # every station and what is on it right now
+    katalog radio chill                # tune in to that playlist's station
+    katalog radio                      # the whole library's station
     katalog radio --off
 
-The radio keeps the queue one track ahead, picked at random from the playlist or the library:
-nothing heard in the last three days, never the same artist twice in a row, and nothing from
-the last fifty picks. When a small playlist runs dry those rules relax one by one rather than
-stop the music. It stays on until you say `--off`, press Play on something else, or the window's
-Radio off.
+Every playlist is a station, and so is the whole library. A station is always on, like a real
+one, but nothing runs in the background: it is a schedule. Its songs are shuffled into an
+order that changes every time round, the same artist kept apart where the playlist allows,
+and laid end to end from a fixed start, so what is on at any moment is a sum. Tuning in joins
+the song that is playing, part way through; pausing and coming back joins it live again.
+Adding to or removing from a playlist changes its schedule from then on. The radio stays on
+until you say `--off`, press Play on something else, or switch the window's receiver off.
 
 The loop guard is always on: a track may play three times in a row, and the fourth start
 (play, prev, a restart) moves on to the next one instead. `katalog now` and the window say so.
@@ -178,7 +181,8 @@ the flake's `lib.userService` instead.
     POST /api/playlists/{id}/tracks    {"tracks":[..]} or {"album":id} or {"artist":id}, appended, no duplicates
     DELETE /api/playlists/{id}/tracks/{position}
     GET  /api/tracks/{id}/playlists    ids of the playlists a track is in
-    POST /api/radio                    {"playlist": id} or {} for everything;  DELETE /api/radio turns it off
+    GET  /api/stations                 every station, the library first: what is on now and next
+    POST /api/radio                    {"playlist": id} or {} for everything, joined live;  DELETE /api/radio turns it off
 
 All answers are JSON except `/art` and `/stream`. CORS is open, so a web view can talk to it directly.
 

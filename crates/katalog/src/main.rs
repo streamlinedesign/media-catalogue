@@ -25,7 +25,8 @@
 //!   katalog playlist-remove <name> <n>
 //!   katalog playlist-rename <name> <new name>
 //!   katalog playlist-delete <name>
-//!   katalog radio [playlist]                something on, from a playlist or everything
+//!   katalog stations                        every station and what is on it now
+//!   katalog radio [playlist]                tune in to a playlist's station, or everything
 //!   katalog radio --off
 //!
 //! Add --json to any command for the raw answer.
@@ -188,8 +189,10 @@ enum Cmd {
     PlaylistDelete {
         name: String,
     },
-    /// Put something on: random picks from a playlist or the whole library,
-    /// resting what played in the last days, never the same artist twice in a row
+    /// Every station (each playlist, and the whole library) and what is on it now
+    Stations,
+    /// Tune in to a station: a playlist, or the whole library, joined live,
+    /// part way into whatever song it is playing
     Radio {
         /// A playlist by name or id; none means everything
         playlist: Option<String>,
@@ -359,6 +362,7 @@ async fn run() -> Result<()> {
             let p = find_playlist(&http, base, name).await?;
             delete(&http, format!("{base}/api/playlists/{}", p["id"])).await?
         }
+        Cmd::Stations => get("/api/stations".into()).await?,
         Cmd::Radio { playlist, off } => {
             if *off {
                 delete(&http, format!("{base}/api/radio")).await?
@@ -497,6 +501,7 @@ async fn run() -> Result<()> {
         | Cmd::Remove { .. }
         | Cmd::Radio { .. }
         | Cmd::Clear => print_now(&value, None),
+        Cmd::Stations => print_stations(&value),
         Cmd::Playlists => print_rows(&value, &["id", "name", "track_count", "duration_ms"]),
         Cmd::Playlist { .. } | Cmd::PlaylistAdd { .. } | Cmd::PlaylistRemove { .. } => {
             print_playlist(&value)
@@ -850,6 +855,25 @@ async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
         .await
         .with_context(|| format!("is katalogd running? could not reach {url}"))?;
     check(res).await
+}
+
+fn print_stations(v: &Value) {
+    let Some(list) = v.as_array() else { return };
+    for st in list {
+        let now = &st["now"];
+        let on = if now.is_null() {
+            "nothing to play".to_string()
+        } else {
+            format!(
+                "{} · {}  {} / {}",
+                s(&now["artist"]),
+                s(&now["title"]),
+                fmt_ms(now["position_ms"].as_i64().unwrap_or(0)),
+                fmt_ms(now["duration_ms"].as_i64().unwrap_or(0)),
+            )
+        };
+        println!("{:<20} {on}", s(&st["name"]));
+    }
 }
 
 fn s(v: &Value) -> String {
