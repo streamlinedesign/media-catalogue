@@ -10,13 +10,23 @@
 //!   katalog fetch lyrics|art|all [--retry]
 //!   katalog url <track id>      the stream URL, for mpv or a phone
 //!
-//!   katalog play <track ids...> | --album <id> | --artist <id>
-//!   katalog add  <track ids...> | --album <id> | --artist <id>
+//!   katalog play <track ids...> | --album <id> | --artist <id> | --playlist <name>
+//!   katalog add  <track ids...> | --album <id> | --artist <id> | --playlist <name>
 //!   katalog now | toggle | pause | resume | next | prev | stop
 //!   katalog seek 1:30 | 90 | +10 | -10
 //!   katalog volume 80
 //!   katalog queue | jump <n> | remove <n> | clear
 //!   katalog devices
+//!
+//!   katalog playlists                       all of them
+//!   katalog playlist <name>                 its tracks
+//!   katalog playlist-new <name>
+//!   katalog playlist-add <name> <track ids...> | --album <id> | --artist <id>
+//!   katalog playlist-remove <name> <n>
+//!   katalog playlist-rename <name> <new name>
+//!   katalog playlist-delete <name>
+//!   katalog radio [playlist]                something on, from a playlist or everything
+//!   katalog radio --off
 //!
 //! Add --json to any command for the raw answer.
 
@@ -96,6 +106,9 @@ enum Cmd {
         /// Everything by an artist
         #[arg(long)]
         artist: Option<i64>,
+        /// A playlist, by name or id
+        #[arg(long)]
+        playlist: Option<String>,
         /// Start at this position in the new queue
         #[arg(long, default_value_t = 0)]
         start: usize,
@@ -107,6 +120,8 @@ enum Cmd {
         album: Option<i64>,
         #[arg(long)]
         artist: Option<i64>,
+        #[arg(long)]
+        playlist: Option<String>,
     },
     /// What is playing, where, and the current lyric line
     Now,
@@ -140,6 +155,48 @@ enum Cmd {
     Clear,
     /// ALSA outputs katalogd can use with --device
     Devices,
+
+    /// All playlists
+    Playlists,
+    /// The tracks of a playlist
+    Playlist {
+        /// Name or id
+        name: String,
+    },
+    /// Make an empty playlist
+    PlaylistNew {
+        name: String,
+    },
+    /// Append tracks to a playlist (ones already in it are skipped)
+    PlaylistAdd {
+        name: String,
+        tracks: Vec<i64>,
+        #[arg(long)]
+        album: Option<i64>,
+        #[arg(long)]
+        artist: Option<i64>,
+    },
+    /// Take entry n out of a playlist
+    PlaylistRemove {
+        name: String,
+        n: usize,
+    },
+    PlaylistRename {
+        name: String,
+        new_name: String,
+    },
+    PlaylistDelete {
+        name: String,
+    },
+    /// Put something on: random picks from a playlist or the whole library,
+    /// resting what played in the last days, never the same artist twice in a row
+    Radio {
+        /// A playlist by name or id; none means everything
+        playlist: Option<String>,
+        /// Turn the radio off (what is playing goes on, the queue stops growing)
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 #[tokio::main]
@@ -226,18 +283,97 @@ async fn run() -> Result<()> {
             tracks,
             album,
             artist,
+            playlist,
             start,
         } => {
-            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist, "start": start});
+            let playlist = match playlist {
+                Some(p) => Some(find_playlist(&http, base, p).await?["id"].clone()),
+                None => None,
+            };
+            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist, "playlist": playlist, "start": start});
             post_json(&http, format!("{base}/api/player/play"), body).await?
         }
         Cmd::Add {
             tracks,
             album,
             artist,
+            playlist,
         } => {
-            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist});
+            let playlist = match playlist {
+                Some(p) => Some(find_playlist(&http, base, p).await?["id"].clone()),
+                None => None,
+            };
+            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist, "playlist": playlist});
             post_json(&http, format!("{base}/api/player/queue"), body).await?
+        }
+        Cmd::Playlists => get("/api/playlists".into()).await?,
+        Cmd::Playlist { name } => {
+            let p = find_playlist(&http, base, name).await?;
+            get(format!("/api/playlists/{}", p["id"])).await?
+        }
+        Cmd::PlaylistNew { name } => {
+            post_json(
+                &http,
+                format!("{base}/api/playlists"),
+                serde_json::json!({ "name": name }),
+            )
+            .await?
+        }
+        Cmd::PlaylistAdd {
+            name,
+            tracks,
+            album,
+            artist,
+        } => {
+            let p = find_playlist(&http, base, name).await?;
+            let body = serde_json::json!({"tracks": tracks, "album": album, "artist": artist});
+            post_json(
+                &http,
+                format!("{base}/api/playlists/{}/tracks", p["id"]),
+                body,
+            )
+            .await?
+        }
+        Cmd::PlaylistRemove { name, n } => {
+            let p = find_playlist(&http, base, name).await?;
+            delete(
+                &http,
+                format!(
+                    "{base}/api/playlists/{}/tracks/{}",
+                    p["id"],
+                    n.saturating_sub(1)
+                ),
+            )
+            .await?
+        }
+        Cmd::PlaylistRename { name, new_name } => {
+            let p = find_playlist(&http, base, name).await?;
+            put_json(
+                &http,
+                format!("{base}/api/playlists/{}", p["id"]),
+                serde_json::json!({ "name": new_name }),
+            )
+            .await?
+        }
+        Cmd::PlaylistDelete { name } => {
+            let p = find_playlist(&http, base, name).await?;
+            delete(&http, format!("{base}/api/playlists/{}", p["id"])).await?
+        }
+        Cmd::Radio { playlist, off } => {
+            if *off {
+                delete(&http, format!("{base}/api/radio")).await?
+            } else {
+                let playlist = match playlist {
+                    Some(p) => Some(find_playlist(&http, base, p).await?["id"].clone()),
+                    None => None,
+                };
+                post_json(
+                    &http,
+                    format!("{base}/api/radio"),
+                    serde_json::json!({ "playlist": playlist }),
+                )
+                .await?
+            }
         }
         Cmd::Now => get("/api/player".into()).await?,
         Cmd::Toggle => post(&http, format!("{base}/api/player/toggle")).await?,
@@ -359,7 +495,16 @@ async fn run() -> Result<()> {
         | Cmd::Volume { .. }
         | Cmd::Jump { .. }
         | Cmd::Remove { .. }
+        | Cmd::Radio { .. }
         | Cmd::Clear => print_now(&value, None),
+        Cmd::Playlists => print_rows(&value, &["id", "name", "track_count", "duration_ms"]),
+        Cmd::Playlist { .. } | Cmd::PlaylistAdd { .. } | Cmd::PlaylistRemove { .. } => {
+            print_playlist(&value)
+        }
+        Cmd::PlaylistNew { .. } | Cmd::PlaylistRename { .. } => {
+            println!("{} (id {})", s(&value["name"]), s(&value["id"]))
+        }
+        Cmd::PlaylistDelete { .. } => println!("deleted"),
         Cmd::Queue => {
             let index = value["index"].as_u64();
             let Some(rows) = value["tracks"].as_array() else { return Ok(()) };
@@ -509,9 +654,16 @@ fn print_now(v: &Value, lyric: Option<&str>) {
     if let Some(e) = v["error"].as_str() {
         eprintln!("player: {e}");
     }
+    if let Some(n) = v["notice"].as_str() {
+        println!("{n}");
+    }
+    let radio = v["radio"]["name"]
+        .as_str()
+        .map(|n| format!(" · radio: {n}"))
+        .unwrap_or_default();
     if v["track"].is_null() {
         println!(
-            "stopped · {} in queue",
+            "stopped · {} in queue{radio}",
             v["queue"].as_array().map(|q| q.len()).unwrap_or(0)
         );
         return;
@@ -550,6 +702,7 @@ fn print_now(v: &Value, lyric: Option<&str>) {
     if let (Some(i), Some(q)) = (v["index"].as_u64(), v["queue"].as_array()) {
         line.push_str(&format!(" · {}/{} in queue", i + 1, q.len()));
     }
+    line.push_str(&radio);
     println!("{line}");
     if let Some(l) = lyric {
         println!("\n{l}");
@@ -594,6 +747,67 @@ fn parse_lrc_line(line: &str) -> Option<(u64, &str)> {
     let m: u64 = m.parse().ok()?;
     let sec: f64 = sec.parse().ok()?;
     Some((m * 60_000 + (sec * 1000.0) as u64, text))
+}
+
+/// A playlist by id or name; the name need not match case.
+async fn find_playlist(http: &reqwest::Client, base: &str, name: &str) -> Result<Value> {
+    let res = http
+        .get(format!("{base}/api/playlists"))
+        .send()
+        .await
+        .with_context(|| format!("is katalogd running? could not reach {base}"))?;
+    let all = check(res).await?;
+    let all = all.as_array().cloned().unwrap_or_default();
+    let by_id = name.parse::<i64>().ok();
+    let found = all
+        .iter()
+        .find(|p| p["id"].as_i64() == by_id || s(&p["name"]).eq_ignore_ascii_case(name.trim()));
+    match found {
+        Some(p) => Ok(p.clone()),
+        None => {
+            let names: Vec<String> = all.iter().map(|p| s(&p["name"])).collect();
+            anyhow::bail!(
+                "no playlist called {name}{}",
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (there are: {})", names.join(", "))
+                }
+            )
+        }
+    }
+}
+
+fn print_playlist(v: &Value) {
+    println!(
+        "{} · {} tracks · {}",
+        s(&v["name"]),
+        s(&v["track_count"]),
+        fmt_ms(v["duration_ms"].as_i64().unwrap_or(0))
+    );
+    let Some(rows) = v["tracks"].as_array() else {
+        return;
+    };
+    for (i, t) in rows.iter().enumerate() {
+        println!(
+            "  {:>3}  {} · {} · {}  ({})",
+            i + 1,
+            s(&t["artist"]),
+            s(&t["title"]),
+            fmt_ms(t["duration_ms"].as_i64().unwrap_or(0)),
+            s(&t["id"])
+        );
+    }
+}
+
+async fn put_json(http: &reqwest::Client, url: String, body: Value) -> Result<Value> {
+    let res = http
+        .put(&url)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("is katalogd running? could not reach {url}"))?;
+    check(res).await
 }
 
 async fn post_json(http: &reqwest::Client, url: String, body: Value) -> Result<Value> {

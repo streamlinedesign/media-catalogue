@@ -4,6 +4,18 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Playlists: `katalog playlist-new|playlist-add|playlist|playlists|playlist-remove|
+  playlist-rename|playlist-delete`, `play --playlist`, the HTTP API under
+  `/api/playlists`, and in the window a Playlists tab, a page per playlist
+  and a `+` on every song.
+- The radio: `katalog radio [playlist]` keeps the queue one random, rested
+  track ahead, never the same artist twice in a row; `r` in the window.
+- The loop guard: a track plays at most three times in a row, then the
+  player moves on and says so.
+- `plays.source` records manual, playlist or radio.
+- Window: the Satoshi files now carry the family name "Satoshi", so running
+  text is set in Satoshi Medium (it was falling back to another face, and
+  "č" and friends showed as boxes).
 - Window: smaller type throughout (about 15 per cent), tighter grid rows.
 - `katalog-window`: the desktop window (iced, no toolkit): album grid, artists,
   queue, synced lyrics, a now-playing card with transport and seek, keyboard

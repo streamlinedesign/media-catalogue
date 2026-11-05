@@ -23,8 +23,21 @@
 //!   POST /api/player/{pause|resume|toggle|stop|next|prev}
 //!   POST /api/player/seek?ms=         POST /api/player/volume?v=0.0..1.0
 //!   POST /api/player/jump?index=      DELETE /api/player/queue/{index}
+//!
+//!   GET  /api/playlists               name, track count, length
+//!   POST /api/playlists               {"name": "chill"}
+//!   GET  /api/playlists/{id}          with its tracks in order
+//!   PUT  /api/playlists/{id}          {"name": "..."} rename
+//!   DELETE /api/playlists/{id}
+//!   POST /api/playlists/{id}/tracks   {"tracks":[ids]} or {"album":id} or {"artist":id}, appended
+//!   DELETE /api/playlists/{id}/tracks/{position}
+//!   GET  /api/tracks/{id}/playlists   ids of the playlists it is in
+//!   "playlist": id works in /api/player/play and /api/player/queue too.
+//!
+//!   POST /api/radio                   {"playlist": id} or {} for the whole library
+//!   DELETE /api/radio                 off
 
-use crate::player::{Cmd, Status as PlayerStatus};
+use crate::player::{Cmd, Radio, Source, Status as PlayerStatus};
 use crate::Shared;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
@@ -53,6 +66,18 @@ pub fn router(state: Shared) -> Router {
         .route("/api/tracks/{id}", get(track))
         .route("/api/tracks/{id}/lyrics", get(lyrics).put(put_lyrics))
         .route("/api/tracks/{id}/lyrics/search", get(search_lyrics))
+        .route("/api/tracks/{id}/playlists", get(track_playlists))
+        .route("/api/playlists", get(playlists).post(create_playlist))
+        .route(
+            "/api/playlists/{id}",
+            get(playlist).put(rename_playlist).delete(delete_playlist),
+        )
+        .route("/api/playlists/{id}/tracks", post(playlist_add))
+        .route(
+            "/api/playlists/{id}/tracks/{position}",
+            delete(playlist_remove),
+        )
+        .route("/api/radio", post(radio_on).delete(radio_off))
         .route("/api/scan", post(scan))
         .route("/api/fetch", post(fetch))
         .route("/art/{id}", get(art))
@@ -371,13 +396,15 @@ async fn player_devices(State(_s): State<Shared>) -> Json<Vec<crate::player::out
     Json(crate::player::output::devices())
 }
 
-/// What to play: explicit track ids, or everything of an album or artist, in order.
+/// What to play: explicit track ids, or everything of an album, artist or
+/// playlist, in order.
 #[derive(Deserialize, Default)]
 struct Selection {
     #[serde(default)]
     tracks: Vec<i64>,
     album: Option<i64>,
     artist: Option<i64>,
+    playlist: Option<i64>,
     #[serde(default)]
     start: usize,
 }
@@ -400,10 +427,16 @@ fn resolve(conn: &rusqlite::Connection, sel: &Selection) -> Result<Vec<i64>, Api
             );
         }
     }
+    if let Some(playlist) = sel.playlist {
+        if db::playlist(conn, playlist)?.is_none() {
+            return Err(not_found("playlist"));
+        }
+        ids.extend(db::playlist_tracks(conn, playlist)?.iter().map(|t| t.id));
+    }
     if ids.is_empty() {
         return Err(ApiError(
             StatusCode::BAD_REQUEST,
-            "nothing to play: give tracks, an album or an artist".into(),
+            "nothing to play: give tracks, an album, an artist or a playlist".into(),
         ));
     }
     Ok(ids)
@@ -418,6 +451,11 @@ async fn player_play(
     s.player.send(Cmd::Play {
         tracks,
         start: sel.start,
+        source: if sel.playlist.is_some() {
+            Source::Playlist
+        } else {
+            Source::Manual
+        },
     })?;
     Ok(Json(settled(&s).await))
 }
@@ -510,6 +548,133 @@ async fn player_jump(
     Query(q): Query<JumpQuery>,
 ) -> ApiResult<PlayerStatus> {
     player_cmd(State(s), Cmd::Jump(q.index)).await
+}
+
+// ---- playlists ----------------------------------------------------------
+
+#[derive(Serialize)]
+struct PlaylistWithTracks {
+    #[serde(flatten)]
+    playlist: db::Playlist,
+    tracks: Vec<db::Track>,
+}
+
+#[derive(Deserialize)]
+struct NameBody {
+    name: String,
+}
+
+async fn playlists(State(s): State<Shared>) -> ApiResult<Vec<db::Playlist>> {
+    Ok(Json(db::playlists(&s.db.lock())?))
+}
+
+async fn create_playlist(
+    State(s): State<Shared>,
+    Json(body): Json<NameBody>,
+) -> ApiResult<db::Playlist> {
+    let made = db::create_playlist(&s.db.lock(), &body.name)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(made))
+}
+
+async fn playlist(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<PlaylistWithTracks> {
+    let conn = s.db.lock();
+    let playlist = db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+    let tracks = db::playlist_tracks(&conn, id)?;
+    Ok(Json(PlaylistWithTracks { playlist, tracks }))
+}
+
+async fn rename_playlist(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    Json(body): Json<NameBody>,
+) -> ApiResult<db::Playlist> {
+    let conn = s.db.lock();
+    db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+    db::rename_playlist(&conn, id, &body.name)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(
+        db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?,
+    ))
+}
+
+async fn delete_playlist(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+) -> ApiResult<serde_json::Value> {
+    if !db::delete_playlist(&s.db.lock(), id)? {
+        return Err(not_found("playlist"));
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+async fn playlist_add(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    body: Option<Json<Selection>>,
+) -> ApiResult<PlaylistWithTracks> {
+    let sel = body.map(|b| b.0).unwrap_or_default();
+    let conn = s.db.lock();
+    db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+    let ids = resolve(&conn, &sel)?;
+    db::add_to_playlist(&conn, id, &ids)?;
+    let playlist = db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+    let tracks = db::playlist_tracks(&conn, id)?;
+    Ok(Json(PlaylistWithTracks { playlist, tracks }))
+}
+
+async fn playlist_remove(
+    State(s): State<Shared>,
+    Path((id, position)): Path<(i64, usize)>,
+) -> ApiResult<PlaylistWithTracks> {
+    let conn = s.db.lock();
+    db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+    if !db::remove_from_playlist(&conn, id, position)? {
+        return Err(not_found("position"));
+    }
+    let playlist = db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+    let tracks = db::playlist_tracks(&conn, id)?;
+    Ok(Json(PlaylistWithTracks { playlist, tracks }))
+}
+
+async fn track_playlists(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<Vec<i64>> {
+    Ok(Json(db::playlists_of_track(&s.db.lock(), id)?))
+}
+
+// ---- radio --------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct RadioBody {
+    playlist: Option<i64>,
+}
+
+async fn radio_on(
+    State(s): State<Shared>,
+    body: Option<Json<RadioBody>>,
+) -> ApiResult<PlayerStatus> {
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let name = match body.playlist {
+        Some(id) => {
+            let p = db::playlist(&s.db.lock(), id)?.ok_or_else(|| not_found("playlist"))?;
+            if p.track_count == 0 {
+                return Err(ApiError(
+                    StatusCode::BAD_REQUEST,
+                    format!("the playlist {} is empty", p.name),
+                ));
+            }
+            p.name
+        }
+        None => "Everything".to_string(),
+    };
+    s.player.send(Cmd::Radio(Radio {
+        playlist: body.playlist,
+        name,
+    }))?;
+    Ok(Json(settled(&s).await))
+}
+
+async fn radio_off(State(s): State<Shared>) -> ApiResult<PlayerStatus> {
+    player_cmd(State(s), Cmd::RadioOff).await
 }
 
 /// The player thread picks commands up between audio blocks, so give it a

@@ -394,7 +394,11 @@ pub fn now_iso() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Simple UTC formatting without a date crate.
+    iso_from_secs(secs)
+}
+
+/// Simple UTC formatting without a date crate.
+fn iso_from_secs(secs: u64) -> String {
     let days = secs / 86400;
     let (h, m, s) = ((secs % 86400) / 3600, (secs % 3600) / 60, secs % 60);
     let (y, mo, d) = civil_from_days(days as i64);
@@ -413,4 +417,229 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+// ---- playlists ---------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub track_count: i64,
+    pub duration_ms: i64,
+    pub created_at: String,
+}
+
+const PLAYLIST_SQL: &str = r#"
+SELECT p.id, p.name,
+       (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id),
+       (SELECT COALESCE(SUM(t.duration_ms), 0) FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id WHERE pt.playlist_id = p.id),
+       p.created_at
+FROM playlists p
+"#;
+
+fn playlist_from_row(r: &Row) -> rusqlite::Result<Playlist> {
+    Ok(Playlist {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        track_count: r.get(2)?,
+        duration_ms: r.get(3)?,
+        created_at: r.get(4)?,
+    })
+}
+
+pub fn playlists(conn: &Connection) -> Result<Vec<Playlist>> {
+    let sql = format!("{PLAYLIST_SQL} ORDER BY p.name COLLATE NOCASE");
+    let mut st = conn.prepare(&sql)?;
+    let rows = st.query_map([], playlist_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn playlist(conn: &Connection, id: i64) -> Result<Option<Playlist>> {
+    let sql = format!("{PLAYLIST_SQL} WHERE p.id = ?1");
+    Ok(conn.query_row(&sql, [id], playlist_from_row).optional()?)
+}
+
+/// A playlist by its exact name, case-insensitively.
+pub fn playlist_by_name(conn: &Connection, name: &str) -> Result<Option<Playlist>> {
+    let sql = format!("{PLAYLIST_SQL} WHERE p.name = ?1 COLLATE NOCASE");
+    Ok(conn
+        .query_row(&sql, [name.trim()], playlist_from_row)
+        .optional()?)
+}
+
+pub fn create_playlist(conn: &Connection, name: &str) -> Result<Playlist> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("a playlist needs a name");
+    }
+    if playlist_by_name(conn, name)?.is_some() {
+        anyhow::bail!("there is already a playlist called {name}");
+    }
+    conn.execute("INSERT INTO playlists (name) VALUES (?1)", [name])?;
+    let id = conn.last_insert_rowid();
+    Ok(playlist(conn, id)?.expect("just inserted"))
+}
+
+pub fn rename_playlist(conn: &Connection, id: i64, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("a playlist needs a name");
+    }
+    if let Some(other) = playlist_by_name(conn, name)? {
+        if other.id != id {
+            anyhow::bail!("there is already a playlist called {name}");
+        }
+    }
+    conn.execute(
+        "UPDATE playlists SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_playlist(conn: &Connection, id: i64) -> Result<bool> {
+    conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
+    Ok(conn.execute("DELETE FROM playlists WHERE id = ?1", [id])? > 0)
+}
+
+/// The tracks of a playlist in order.
+pub fn playlist_tracks(conn: &Connection, id: i64) -> Result<Vec<Track>> {
+    let sql = format!(
+        "{TRACK_SQL} JOIN playlist_tracks pt ON pt.track_id = t.id
+         WHERE pt.playlist_id = ?1 ORDER BY pt.position"
+    );
+    let mut st = conn.prepare(&sql)?;
+    let rows = st.query_map([id], track_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Appends tracks that are not in the list yet. Returns how many went in.
+pub fn add_to_playlist(conn: &Connection, id: i64, track_ids: &[i64]) -> Result<usize> {
+    let mut next: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    let mut added = 0;
+    for t in track_ids {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2)",
+            params![id, t],
+            |r| r.get::<_, i64>(0).map(|x| x != 0),
+        )?;
+        if present {
+            continue;
+        }
+        let n = conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, position, track_id)
+             SELECT ?1, ?2, id FROM tracks WHERE id = ?3",
+            params![id, next, t],
+        )?;
+        if n > 0 {
+            next += 1;
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
+/// Removes the entry at `position` (0-based, as `playlist_tracks` lists them)
+/// and closes the gap.
+pub fn remove_from_playlist(conn: &Connection, id: i64, position: usize) -> Result<bool> {
+    let ids: Vec<i64> = {
+        let mut st = conn.prepare(
+            "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position",
+        )?;
+        let rows = st.query_map([id], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if position >= ids.len() {
+        return Ok(false);
+    }
+    let mut ids = ids;
+    ids.remove(position);
+    set_playlist_tracks(conn, id, &ids)?;
+    Ok(true)
+}
+
+/// Replaces the whole list, for reordering.
+pub fn set_playlist_tracks(conn: &Connection, id: i64, track_ids: &[i64]) -> Result<()> {
+    conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
+    for (i, t) in track_ids.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?1, ?2, ?3)",
+            params![id, i as i64, t],
+        )?;
+    }
+    Ok(())
+}
+
+/// Ids of the playlists a track is in.
+pub fn playlists_of_track(conn: &Connection, track_id: i64) -> Result<Vec<i64>> {
+    let mut st = conn.prepare(
+        "SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_id = ?1 ORDER BY playlist_id",
+    )?;
+    let rows = st.query_map([track_id], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+// ---- radio -------------------------------------------------------------
+
+/// Picks one track for the radio: at random from `playlist` (or the whole
+/// library), not played in the last `rest_days`, not in `avoid`, and by a
+/// different artist than `last_artist` when there is a choice. When the rest
+/// rule leaves nothing, it is relaxed, then the artist rule, so the radio
+/// never falls silent while there is music.
+pub fn radio_pick(
+    conn: &Connection,
+    playlist: Option<i64>,
+    rest_days: i64,
+    avoid: &[i64],
+    last_artist: Option<i64>,
+) -> Result<Option<i64>> {
+    let avoid_list = avoid
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let avoid_sql = if avoid_list.is_empty() {
+        String::new()
+    } else {
+        format!(" AND t.id NOT IN ({avoid_list})")
+    };
+    let pool_sql = match playlist {
+        Some(_) => " AND t.id IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1)",
+        None => " AND ?1 IS NULL",
+    };
+    let sql = format!(
+        "SELECT t.id FROM tracks t WHERE t.duration_ms > 0{pool_sql}{avoid_sql}
+           AND t.id NOT IN (SELECT track_id FROM plays WHERE started_at > ?2)
+           AND (?3 IS NULL OR t.artist_id != ?3)
+         ORDER BY RANDOM() LIMIT 1"
+    );
+    let since = days_ago_iso(rest_days);
+    // Nothing was started after the year 9999: the rest rule switched off.
+    let never = "9999".to_string();
+    for (rest, artist) in [(true, true), (true, false), (false, true), (false, false)] {
+        let since = if rest { &since } else { &never };
+        let artist = if artist { last_artist } else { None };
+        let pick: Option<i64> = conn
+            .query_row(&sql, params![playlist, since, artist], |r| r.get(0))
+            .optional()?;
+        if pick.is_some() {
+            return Ok(pick);
+        }
+    }
+    Ok(None)
+}
+
+/// `now_iso` moved back by `days`.
+fn days_ago_iso(days: i64) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        - days.max(0) * 86_400;
+    iso_from_secs(secs.max(0) as u64)
 }

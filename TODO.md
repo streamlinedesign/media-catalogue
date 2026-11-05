@@ -11,10 +11,12 @@
 - Tests: the Go side has none; the Rust side only covers title and artist cleaning in `katalog-core/src/fetch.rs`
 - Tag `v0.1.0` so `release.yml` publishes the first binaries
 
-- Playlists and the radio on top of the `plays` table (a chill station, no
-  repeat within three plays)
 - Window polish: numbers on one baseline, a right-click menu on tracks and
   albums
+- Find lyrics for the playing track from the window
+- Reorder a playlist by dragging; `katalog playlist-move`
+- Radio: a rest period and keep-count you can set; stations from tags once
+  `track_tags` is in use
 
 ## Later
 
@@ -22,5 +24,6 @@
 
 ## Done
 
+- 0.3.0: playlists, the radio, the loop guard, add-to-playlist on every song
 - 0.2.0: the desktop window, cropped covers, decade search, a way back from an album
 - 0.1.0: katalogd, the katalog command line, the Nix flake, the Go catalogue

@@ -4,6 +4,10 @@
 //! Tracks follow each other without a gap when they share a rate and depth;
 //! when the format changes the sink is drained and reopened. Every start and
 //! finish goes into the `plays` table.
+//!
+//! The radio keeps the queue one track ahead, picked at random from a
+//! playlist or the whole library, resting anything heard in the last days.
+//! The loop guard lets a track play three times in a row, then moves on.
 
 pub mod decode;
 pub mod output;
@@ -46,7 +50,44 @@ pub struct Status {
     pub bit_perfect: bool,
     /// The last thing that went wrong, until the next track starts.
     pub error: Option<String>,
+    /// Set while the radio is on.
+    pub radio: Option<Radio>,
+    /// What the loop guard did last, until the next track starts.
+    pub notice: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Radio {
+    /// None: the whole library.
+    pub playlist: Option<i64>,
+    pub name: String,
+}
+
+/// Where a start came from, for the `plays` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Manual,
+    Playlist,
+    Radio,
+}
+
+impl Source {
+    fn as_str(self) -> &'static str {
+        match self {
+            Source::Manual => "manual",
+            Source::Playlist => "playlist",
+            Source::Radio => "radio",
+        }
+    }
+}
+
+/// How many times in a row one track may play before the guard moves on.
+pub const LOOP_LIMIT: u32 = 3;
+/// Days a track rests after a play before the radio picks it again.
+pub const RADIO_REST_DAYS: i64 = 3;
+/// How many recent radio tracks are kept in the queue and never picked again
+/// right away.
+const RADIO_KEEP: usize = 50;
 
 #[derive(Debug)]
 pub enum Cmd {
@@ -54,7 +95,12 @@ pub enum Cmd {
     Play {
         tracks: Vec<i64>,
         start: usize,
+        source: Source,
     },
+    /// Turn the radio on: clear the queue and start picking.
+    Radio(Radio),
+    /// Turn the radio off; what is playing goes on, the queue stops growing.
+    RadioOff,
     /// Append to the queue; start playing if stopped.
     Add {
         tracks: Vec<i64>,
@@ -95,6 +141,8 @@ impl Player {
             format: None,
             bit_perfect: false,
             error: None,
+            radio: None,
+            notice: None,
         }));
         let st = status.clone();
         std::thread::Builder::new()
@@ -131,6 +179,12 @@ struct Engine {
     paused: bool,
     volume: f32,
     error: Option<String>,
+    radio: Option<Radio>,
+    source: Source,
+    /// The last track started and how many times in a row.
+    last_started: Option<i64>,
+    streak: u32,
+    notice: Option<String>,
 }
 
 struct Current {
@@ -161,6 +215,11 @@ impl Engine {
             paused: false,
             volume: 1.0,
             error: None,
+            radio: None,
+            source: Source::Manual,
+            last_started: None,
+            streak: 0,
+            notice: None,
         }
     }
 
@@ -201,14 +260,45 @@ impl Engine {
 
     fn handle(&mut self, cmd: Cmd) -> Result<()> {
         match cmd {
-            Cmd::Play { tracks, start } => {
+            Cmd::Play {
+                tracks,
+                start,
+                source,
+            } => {
                 if tracks.is_empty() {
                     anyhow::bail!("nothing to play");
                 }
                 self.finish_current(false);
+                self.radio = None;
+                self.source = source;
                 self.queue = tracks;
                 self.paused = false;
                 self.start_index(start.min(self.queue.len() - 1))?;
+            }
+            Cmd::Radio(radio) => {
+                info!("radio on: {}", radio.name);
+                self.finish_current(false);
+                self.radio = Some(radio);
+                self.source = Source::Radio;
+                self.queue.clear();
+                self.index = None;
+                self.paused = false;
+                match self.radio_pick(None) {
+                    Some(id) => {
+                        self.queue.push(id);
+                        self.start_index(0)?;
+                    }
+                    None => {
+                        self.radio = None;
+                        self.close_sink();
+                        anyhow::bail!("the radio found nothing to play");
+                    }
+                }
+            }
+            Cmd::RadioOff => {
+                if self.radio.take().is_some() {
+                    info!("radio off");
+                }
             }
             Cmd::Add { tracks } => {
                 let was_empty = self.queue.is_empty();
@@ -281,7 +371,11 @@ impl Engine {
                 // Early in a track, "previous" means the one before; later it restarts.
                 let pos = self.position_ms();
                 if pos > 3000 || self.index == Some(0) {
-                    self.seek(0)?;
+                    if self.count_start(self.current.as_ref().map(|c| c.track.id)) {
+                        self.seek(0)?;
+                    } else {
+                        self.advance(1)?;
+                    }
                 } else {
                     self.advance(-1)?;
                 }
@@ -292,8 +386,60 @@ impl Engine {
         Ok(())
     }
 
+    /// Counts a start of `id` towards the loop guard. False when the track has
+    /// had its three in a row and should not start again now.
+    fn count_start(&mut self, id: Option<i64>) -> bool {
+        let Some(id) = id else { return true };
+        if self.last_started == Some(id) {
+            if self.streak >= LOOP_LIMIT {
+                let title = self
+                    .current
+                    .as_ref()
+                    .filter(|c| c.track.id == id)
+                    .map(|c| c.track.title.clone())
+                    .or_else(|| db::track(&self.conn, id).ok().flatten().map(|t| t.title))
+                    .unwrap_or_else(|| format!("track {id}"));
+                let msg = format!("{title} has played {LOOP_LIMIT} times in a row, moving on");
+                info!("loop guard: {msg}");
+                self.notice = Some(msg);
+                return false;
+            }
+            self.streak += 1;
+        } else {
+            self.last_started = Some(id);
+            self.streak = 1;
+        }
+        true
+    }
+
     fn start_index(&mut self, i: usize) -> Result<()> {
         let id = self.queue[i];
+        if !self.count_start(Some(id)) {
+            // The guard says no. In radio, swap the track for a fresh pick;
+            // in a queue, step past it, or stop at the end.
+            if self.radio.is_some() {
+                let avoid = self.queue.clone();
+                match self.radio_pick(Some(&avoid)) {
+                    Some(fresh) => {
+                        self.queue[i] = fresh;
+                        self.last_started = None;
+                        return self.start_index(i);
+                    }
+                    None => {
+                        self.close_sink();
+                        self.index = None;
+                        return Ok(());
+                    }
+                }
+            }
+            if i + 1 < self.queue.len() {
+                self.last_started = None;
+                return self.start_index(i + 1);
+            }
+            self.close_sink();
+            self.index = None;
+            return Ok(());
+        }
         let track = db::track(&self.conn, id)?.with_context(|| format!("track {id} is gone"))?;
         let decoder = Decoder::open(Path::new(&track.path))?;
         self.ensure_sink(decoder.spec)?;
@@ -303,6 +449,9 @@ impl Engine {
             track.artist, track.title, decoder.spec
         );
         self.error = None;
+        if self.streak <= 1 {
+            self.notice = None;
+        }
         self.index = Some(i);
         self.current = Some(Current {
             track,
@@ -311,7 +460,59 @@ impl Engine {
             frames_out: 0,
             finished_marked: false,
         });
+        self.top_up();
         Ok(())
+    }
+
+    /// Radio: keep one track waiting after the current one, and let go of
+    /// what was heard long ago so the queue does not grow for ever.
+    fn top_up(&mut self) {
+        if self.radio.is_none() {
+            return;
+        }
+        let Some(i) = self.index else { return };
+        if i > RADIO_KEEP * 2 {
+            let drop = i - RADIO_KEEP;
+            self.queue.drain(..drop);
+            self.index = Some(i - drop);
+        }
+        let i = self.index.unwrap_or(0);
+        if i + 1 < self.queue.len() {
+            return;
+        }
+        let avoid = self.queue.clone();
+        if let Some(id) = self.radio_pick(Some(&avoid)) {
+            self.queue.push(id);
+        }
+    }
+
+    /// One pick for the radio: rested, not among the last tracks of the
+    /// queue (or `avoid`), and not by the artist playing now when it can be
+    /// helped. A small pool is allowed to come round again.
+    fn radio_pick(&self, avoid: Option<&[i64]>) -> Option<i64> {
+        let radio = self.radio.as_ref()?;
+        let queue = self.queue.clone();
+        let avoid = avoid.unwrap_or(&queue);
+        let recent = &avoid[avoid.len().saturating_sub(RADIO_KEEP)..];
+        let last_artist = self.current.as_ref().map(|c| c.track.artist_id);
+        let current: Vec<i64> = self.current.iter().map(|c| c.track.id).collect();
+        for avoid in [recent, &current[..]] {
+            match db::radio_pick(
+                &self.conn,
+                radio.playlist,
+                RADIO_REST_DAYS,
+                avoid,
+                last_artist,
+            ) {
+                Ok(Some(pick)) => return Some(pick),
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!("radio: {e:#}");
+                    return None;
+                }
+            }
+        }
+        None
     }
 
     /// Moves by `by` in the queue. Past the end: stop and release the card.
@@ -512,8 +713,8 @@ impl Engine {
 
     fn record_start(&self, track_id: i64) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO plays (track_id, started_at, finished, source) VALUES (?1, ?2, 0, 'manual')",
-            rusqlite::params![track_id, db::now_iso()],
+            "INSERT INTO plays (track_id, started_at, finished, source) VALUES (?1, ?2, 0, ?3)",
+            rusqlite::params![track_id, db::now_iso(), self.source.as_str()],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -547,6 +748,8 @@ impl Engine {
         st.bit_perfect =
             self.sink.as_ref().map(|s| s.bit_perfect).unwrap_or(false) && self.volume >= 0.999;
         st.error = self.error.clone();
+        st.radio = self.radio.clone();
+        st.notice = self.notice.clone();
     }
 }
 

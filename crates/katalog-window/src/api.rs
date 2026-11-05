@@ -69,6 +69,31 @@ pub struct Player {
     pub format: Option<String>,
     pub bit_perfect: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub radio: Option<Radio>,
+    #[serde(default)]
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Radio {
+    pub playlist: Option<i64>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub track_count: i64,
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct PlaylistWithTracks {
+    #[serde(flatten)]
+    pub playlist: Playlist,
+    pub tracks: Vec<Track>,
 }
 
 impl Default for Player {
@@ -85,6 +110,8 @@ impl Default for Player {
             format: None,
             bit_perfect: false,
             error: None,
+            radio: None,
+            notice: None,
         }
     }
 }
@@ -221,8 +248,21 @@ impl Client {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> ApiResult<T> {
+        self.send(reqwest::Method::POST, path, body).await
+    }
+
+    pub async fn delete<T: serde::de::DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        self.send(reqwest::Method::DELETE, path, None).await
+    }
+
+    async fn send<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> ApiResult<T> {
         let url = self.url(path);
-        let mut req = self.http.post(&url);
+        let mut req = self.http.request(method, &url);
         if let Some(b) = body {
             req = req.json(&b);
         }
