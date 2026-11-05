@@ -4,6 +4,9 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Window: a CRT overlay over the whole window, scanlines and a soft
+  vignette, drawn once per size and taking no input. `c` turns it off and
+  on; `KATALOG_CRT=0` starts without it.
 - Stations as streams: `GET /stations/<name>.wav` plays a station live as
   an endless 44.1 kHz 16-bit stereo WAV that mpv, VLC or a phone can open
   (files at other rates are resampled for the stream only). A thread per

@@ -7,9 +7,10 @@
 //!
 //!   katalog-window                       talks to http://127.0.0.1:7300
 //!   katalog-window --url http://host:7300
-//!   space: play/pause   n / p: next, previous   + / -: volume   r: radio   esc: back
+//!   space: play/pause   n / p: next, previous   + / -: volume   r: radio   c: CRT   esc: back
 
 mod api;
+mod crt;
 mod home;
 mod icons;
 mod style;
@@ -143,6 +144,8 @@ struct App {
     /// When the volume was last changed here: until a moment after, the
     /// player's answers may predate the change and must not undo it.
     volume_set: Option<std::time::Instant>,
+    crt: crt::Crt,
+    crt_on: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +214,8 @@ enum Message {
     /// Move the receiver this many stations; on air, the radio follows.
     Tune(i32),
     Power,
+    /// The CRT overlay on or off.
+    Crt,
 }
 
 impl App {
@@ -261,6 +266,10 @@ impl App {
             tuned: 0,
             on_air: Vec::new(),
             volume_set: None,
+            crt: crt::Crt::default(),
+            crt_on: std::env::var("KATALOG_CRT")
+                .map(|v| v != "0")
+                .unwrap_or(true),
         };
         let mut tasks = vec![
             app.load_status(),
@@ -1139,6 +1148,10 @@ impl App {
                     Task::done(Message::RadioOn(pl))
                 }
             }
+            Message::Crt => {
+                self.crt_on = !self.crt_on;
+                Task::none()
+            }
             Message::Shot(shot) => {
                 if let Some(path) = self.screenshot.take() {
                     let img = ::image::RgbaImage::from_raw(
@@ -1189,6 +1202,7 @@ impl App {
                     Key::Character("n") => Some(Message::Next),
                     Key::Character("p") => Some(Message::Prev),
                     Key::Character("r") => Some(Message::RadioOn(None)),
+                    Key::Character("c") => Some(Message::Crt),
                     Key::Character("+") | Key::Character("=") => Some(Message::Volume(5)),
                     Key::Character("-") => Some(Message::Volume(-5)),
                     _ => None,
@@ -1200,6 +1214,15 @@ impl App {
     // ---- view ------------------------------------------------------------
 
     fn view(&self) -> Element<'_, Message> {
+        let page = self.page();
+        if self.crt_on {
+            iced::widget::stack![page, crt::overlay(&self.crt)].into()
+        } else {
+            page
+        }
+    }
+
+    fn page(&self) -> Element<'_, Message> {
         if self.tab == Tab::Home {
             return self.home_view();
         }
