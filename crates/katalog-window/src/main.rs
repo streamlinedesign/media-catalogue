@@ -55,11 +55,11 @@ fn main() -> iced::Result {
 }
 
 const GUTTER: f32 = 32.0;
-const CARD_MIN: f32 = 220.0;
+const CARD_MIN: f32 = 200.0;
 const CARD_GAP: f32 = 24.0;
-const ROW_GAP: f32 = 40.0;
+const ROW_GAP: f32 = 32.0;
 /// Below the cover: title row, rule, artist line.
-const CARD_TEXT_H: f32 = 82.0;
+const CARD_TEXT_H: f32 = 70.0;
 const THUMB: u32 = 320;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,7 +417,7 @@ impl App {
                             self.lyrics_line = idx;
                             if self.tab == Tab::Lyrics {
                                 if let Some(i) = idx {
-                                    let y = (i as f32 * LYRIC_LINE_H - 160.0).max(0.0);
+                                    let y = (i as f32 * LYRIC_LINE_H - 130.0).max(0.0);
                                     tasks.push(scrollable::scroll_to(
                                         scrollable::Id::new("lyrics"),
                                         scrollable::AbsoluteOffset { x: 0.0, y },
@@ -636,7 +636,7 @@ impl App {
     }
 
     fn header(&self) -> Element<'_, Message> {
-        let wordmark = button(text("Katalog").size(32).font(BLACK).line_height(0.9))
+        let wordmark = button(text("Katalog").size(26).font(BLACK).line_height(0.9))
             .style(style::plain)
             .padding(0)
             .on_press(Message::Back);
@@ -650,7 +650,7 @@ impl App {
         let search = text_input(&placeholder, &self.query)
             .id(text_input::Id::new("search"))
             .on_input(Message::Search)
-            .size(24)
+            .size(20)
             .font(MEDIUM)
             .padding([4, 0])
             .style(style::search);
@@ -668,7 +668,7 @@ impl App {
             Space::with_width(GUTTER),
             search,
             Space::with_width(GUTTER),
-            text(total).size(13).color(alpha(CREAM, 0.8)),
+            text(total).size(12).color(alpha(CREAM, 0.8)),
         ]
         .align_y(Alignment::End);
 
@@ -701,10 +701,10 @@ impl App {
         if let Some(e) = &self.error {
             head = head.push(Space::with_height(12)).push(
                 row![
-                    text(e.clone()).size(15).color(RED).font(BOLD),
+                    text(e.clone()).size(13).color(RED).font(BOLD),
                     horizontal_space(),
                     text("is katalogd running?")
-                        .size(13)
+                        .size(12)
                         .color(alpha(CREAM, 0.7)),
                 ]
                 .align_y(Alignment::End),
@@ -730,11 +730,11 @@ impl App {
         let active = self.tab == tab;
         let fg = if active { CREAM } else { alpha(CREAM, 0.6) };
         let label = text(label.to_string())
-            .size(18)
+            .size(15)
             .font(if active { BLACK } else { MEDIUM })
             .color(fg)
             .line_height(1.1);
-        let count = text(count).size(13).color(fg).line_height(1.0);
+        let count = text(count).size(12).color(fg).line_height(1.0);
         let inner = column![
             row![label, Space::with_width(10), count].align_y(Alignment::End),
             Space::with_height(5),
@@ -762,7 +762,7 @@ impl App {
         if albums.is_empty() {
             return container(
                 column![
-                    text("Nothing found").size(56).font(BLACK).line_height(0.9),
+                    text("Nothing found").size(44).font(BLACK).line_height(0.9),
                     Space::with_height(12),
                     horizontal_rule(2).style(style::rule_px(CREAM, 2)),
                     Space::with_height(24),
@@ -771,7 +771,7 @@ impl App {
                     } else {
                         "Try fewer words, or an artist, or a year."
                     })
-                    .size(18)
+                    .size(15)
                     .color(alpha(CREAM, 0.8)),
                 ]
                 .max_width(640.0),
@@ -831,8 +831,8 @@ impl App {
         // Typographic placeholder: the title set big on a colour block.
         let (bg, fg, acc) = style::placeholder_colors(seed);
         let pad = side * 0.08;
-        let title_size = (side * 0.14).clamp(14.0, 64.0);
-        let foot_size = (side * 0.055).clamp(9.0, 15.0);
+        let title_size = (side * 0.13).clamp(12.0, 52.0);
+        let foot_size = (side * 0.05).clamp(8.0, 13.0);
         let mark = container(Space::new(Length::Fill, Length::Fixed(side * 0.16)))
             .style(style::filled(acc))
             .width(Length::Fill);
@@ -868,7 +868,7 @@ impl App {
         let head = row![
             container(
                 text(a.title.clone())
-                    .size(22)
+                    .size(18)
                     .font(BOLD)
                     .line_height(1.1)
                     .wrapping(text::Wrapping::None)
@@ -876,7 +876,7 @@ impl App {
             .width(Length::Fill)
             .clip(true),
             text(year)
-                .size(15)
+                .size(13)
                 .color(alpha(CREAM, 0.85))
                 .wrapping(text::Wrapping::None),
         ]
@@ -890,7 +890,7 @@ impl App {
             Space::with_height(4),
             horizontal_rule(1).style(style::hairline(CREAM)),
             Space::with_height(6),
-            text(a.artist.clone()).size(15).line_height(1.3),
+            text(a.artist.clone()).size(13).line_height(1.3),
         ]
         .width(Length::Fixed(w));
         mouse_area(card)
@@ -901,7 +901,7 @@ impl App {
 
     fn album_view(&self, id: i64) -> Element<'_, Message> {
         let Some(open) = self.open_album.as_ref().filter(|a| a.album.id == id) else {
-            return container(text("").size(18)).height(Length::Fill).into();
+            return container(text("").size(15)).height(Length::Fill).into();
         };
         let a = &open.album;
         let side = ((self.width - 2.0 * GUTTER) * 0.36).clamp(240.0, 480.0);
@@ -913,20 +913,20 @@ impl App {
             let is_current = current == Some(t.id);
             let num = t.number.map(|n| n.to_string()).unwrap_or_default();
             let r = row![
-                container(text(num).size(15).color(alpha(CREAM, 0.7)))
+                container(text(num).size(13).color(alpha(CREAM, 0.7)))
                     .width(Length::Fixed(36.0))
                     .align_x(iced::alignment::Horizontal::Right),
                 Space::with_width(16),
                 text(t.title.clone())
-                    .size(18)
+                    .size(15)
                     .font(if is_current { BLACK } else { MEDIUM })
                     .line_height(1.2),
                 horizontal_space(),
                 text(if t.has_lyrics { "lyrics" } else { "" })
-                    .size(13)
+                    .size(12)
                     .color(alpha(CREAM, 0.6)),
                 Space::with_width(16),
-                text(fmt_ms(t.duration_ms)).size(15),
+                text(fmt_ms(t.duration_ms)).size(13),
             ]
             .align_y(Alignment::End);
             let b = button(
@@ -955,34 +955,34 @@ impl App {
         );
         let title = column![
             text(a.title.clone())
-                .size(if a.title.len() > 28 { 40 } else { 56 })
+                .size(if a.title.len() > 28 { 32 } else { 44 })
                 .font(BLACK)
                 .line_height(0.9),
             Space::with_height(10),
             horizontal_rule(2).style(style::rule_px(CREAM, 2)),
             Space::with_height(8),
             row![
-                button(text(a.artist.clone()).size(18).line_height(1.2))
+                button(text(a.artist.clone()).size(15).line_height(1.2))
                     .style(style::plain)
                     .padding(0)
                     .on_press(Message::OpenArtist(a.artist_id)),
                 horizontal_space(),
-                text(meta).size(15).color(alpha(CREAM, 0.85)),
+                text(meta).size(13).color(alpha(CREAM, 0.85)),
             ]
             .align_y(Alignment::End),
         ];
         let actions = row![
-            button(text("All albums").size(15))
+            button(text("All albums").size(13))
                 .style(style::chip)
                 .padding([6, 12])
                 .on_press(Message::Back),
             Space::with_width(24),
-            button(text("Play").size(15))
+            button(text("Play").size(13))
                 .style(style::chip)
                 .padding([6, 12])
                 .on_press(Message::PlayAlbum(a.id, 0)),
             Space::with_width(8),
-            button(text("Add to queue").size(15))
+            button(text("Add to queue").size(13))
                 .style(style::chip)
                 .padding([6, 12])
                 .on_press(Message::AddAlbum(a.id)),
@@ -1015,7 +1015,7 @@ impl App {
         let mut list = column![];
         for a in self.filtered_artists() {
             let r = row![
-                text(a.name.clone()).size(24).line_height(1.1),
+                text(a.name.clone()).size(20).line_height(1.1),
                 horizontal_space(),
                 text(format!(
                     "{} {} · {} tracks",
@@ -1027,7 +1027,7 @@ impl App {
                     },
                     a.track_count
                 ))
-                .size(15)
+                .size(13)
                 .color(alpha(CREAM, 0.8)),
             ]
             .align_y(Alignment::End);
@@ -1061,7 +1061,7 @@ impl App {
         let Some(q) = &self.queue else {
             return container(
                 text("Nothing queued. Open an album and press Play.")
-                    .size(18)
+                    .size(15)
                     .color(alpha(CREAM, 0.8)),
             )
             .padding(iced::Padding::new(GUTTER).top(32.0))
@@ -1074,22 +1074,22 @@ impl App {
             let is_current = current == Some(i);
             let op = if is_current { 1.0 } else { 0.75 };
             let r = row![
-                container(text((i + 1).to_string()).size(15).color(alpha(CREAM, 0.7)))
+                container(text((i + 1).to_string()).size(13).color(alpha(CREAM, 0.7)))
                     .width(Length::Fixed(36.0))
                     .align_x(iced::alignment::Horizontal::Right),
                 Space::with_width(16),
                 text(t.title.clone())
-                    .size(18)
+                    .size(15)
                     .font(if is_current { BLACK } else { MEDIUM })
                     .color(alpha(CREAM, op))
                     .line_height(1.2),
                 Space::with_width(16),
                 text(format!("{} · {}", t.artist, t.album))
-                    .size(15)
+                    .size(13)
                     .color(alpha(CREAM, 0.7))
                     .line_height(1.2),
                 horizontal_space(),
-                text(fmt_ms(t.duration_ms)).size(15).color(alpha(CREAM, op)),
+                text(fmt_ms(t.duration_ms)).size(13).color(alpha(CREAM, op)),
             ]
             .align_y(Alignment::End);
             list = list.push(
@@ -1123,7 +1123,7 @@ impl App {
 
     fn lyrics_view(&self) -> Element<'_, Message> {
         let Some(t) = &self.player.track else {
-            return container(text("Nothing playing.").size(18).color(alpha(CREAM, 0.8)))
+            return container(text("Nothing playing.").size(15).color(alpha(CREAM, 0.8)))
                 .padding(iced::Padding::new(GUTTER).top(32.0))
                 .height(Length::Fill)
                 .into();
@@ -1137,7 +1137,7 @@ impl App {
                     t.id
                 )
             };
-            return container(text(msg).size(18).color(alpha(CREAM, 0.8)))
+            return container(text(msg).size(15).color(alpha(CREAM, 0.8)))
                 .padding(iced::Padding::new(GUTTER).top(32.0))
                 .height(Length::Fill)
                 .into();
@@ -1147,7 +1147,7 @@ impl App {
         for (i, ln) in lines.iter().enumerate() {
             let is_now = l.synced && self.lyrics_line == Some(i);
             let past = l.synced && self.lyrics_line.map(|c| i < c).unwrap_or(false);
-            let size = if l.synced { 30 } else { 20 };
+            let size = if l.synced { 24 } else { 17 };
             let line_text = if ln.text.is_empty() {
                 "·".to_string()
             } else {
@@ -1192,10 +1192,10 @@ impl App {
         );
         let head = row![
             text(format!("{} · {}", t.artist, t.title))
-                .size(15)
+                .size(13)
                 .color(alpha(CREAM, 0.8)),
             horizontal_space(),
-            text(source).size(13).color(alpha(CREAM, 0.6)),
+            text(source).size(12).color(alpha(CREAM, 0.6)),
         ]
         .align_y(Alignment::End);
         scrollable(
@@ -1261,14 +1261,14 @@ impl App {
         };
         let titles = column![
             text(title)
-                .size(18)
+                .size(15)
                 .font(BOLD)
                 .color(CARD_TEXT)
                 .line_height(1.2)
                 .wrapping(text::Wrapping::None),
             Space::with_height(4),
             text(sub)
-                .size(15)
+                .size(13)
                 .color(CARD_SOFT)
                 .line_height(1.2)
                 .wrapping(text::Wrapping::None),
@@ -1287,11 +1287,11 @@ impl App {
                 .on_press(m)
         };
         let transport = row![
-            ctl(icons::Glyph::Prev, 20.0, Message::Prev),
+            ctl(icons::Glyph::Prev, 18.0, Message::Prev),
             Space::with_width(12),
-            ctl(glyph, 30.0, Message::Toggle),
+            ctl(glyph, 26.0, Message::Toggle),
             Space::with_width(12),
-            ctl(icons::Glyph::Next, 20.0, Message::Next),
+            ctl(icons::Glyph::Next, 18.0, Message::Next),
         ]
         .align_y(Alignment::Center);
 
@@ -1305,7 +1305,7 @@ impl App {
             fmt_ms(p.position_ms as i64),
             fmt_ms(p.duration_ms as i64)
         ))
-        .size(13)
+        .size(12)
         .color(CARD_SOFT);
         let mut detail_parts: Vec<String> = Vec::new();
         if let Some(f) = &p.format {
@@ -1324,7 +1324,7 @@ impl App {
             detail_parts.push(e.clone());
         }
         let detail = text(detail_parts.join(" · "))
-            .size(13)
+            .size(12)
             .color(CARD_MUTE)
             .wrapping(text::Wrapping::None);
 
@@ -1343,7 +1343,7 @@ impl App {
 
         let lyric = container(
             text(current_line)
-                .size(15)
+                .size(13)
                 .color(CARD_SOFT)
                 .line_height(1.2)
                 .wrapping(text::Wrapping::None),
@@ -1381,7 +1381,7 @@ impl App {
     }
 }
 
-const LYRIC_LINE_H: f32 = 46.0;
+const LYRIC_LINE_H: f32 = 38.0;
 
 /// "1977" is that year, "197" the whole decade, "70s" and "1970s" too,
 /// "1975-1980" a range.

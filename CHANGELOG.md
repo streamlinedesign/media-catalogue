@@ -4,6 +4,7 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Window: smaller type throughout (about 15 per cent), tighter grid rows.
 - `katalog-window`: the desktop window (iced, no toolkit): album grid, artists,
   queue, synced lyrics, a now-playing card with transport and seek, keyboard
   shortcuts.
