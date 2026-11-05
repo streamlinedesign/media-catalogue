@@ -222,6 +222,43 @@ pub struct Episode {
     pub subs: Vec<String>,
 }
 
+/// A TV channel and what is on it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Channel {
+    pub number: usize,
+    pub name: String,
+    pub items: usize,
+    pub now: Option<Showing>,
+    pub next: Option<Showing>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Showing {
+    pub kind: String,
+    pub id: i64,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub year: Option<i64>,
+    pub poster_id: Option<i64>,
+    pub start_ms: i64,
+    pub position_ms: i64,
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Slot {
+    pub start_ms: i64,
+    pub duration_ms: i64,
+}
+
+/// How to join a channel now: `Watch` plus the slot.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ChannelWatch {
+    #[serde(flatten)]
+    pub watch: Watch,
+    pub slot: Slot,
+}
+
 /// How katalogd says to watch something; see `/api/movies/{id}/watch`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Watch {

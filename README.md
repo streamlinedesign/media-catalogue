@@ -161,6 +161,26 @@ then `Film.en.srt`, then a `Film.srt` with no language, which is nearly always t
 there to be read. Otherwise mpv starts without subtitles. When katalogd runs on another
 machine, mpv plays the file and its subtitles over HTTP from it.
 
+### The television
+
+Home has a television above the lists, with three channels that are always on, worked out
+like the radio's stations so switching on joins a film part way through:
+
+- **1 Films**: every film, shuffled, a new order each time round.
+- **2 Series**: every show in turn, one episode each, in order.
+- **3 Everything**: films and episodes together, a show kept apart from itself.
+
+On X11 mpv draws inside the set. On Home it plays without sound; a click on the picture
+makes it fullscreen with sound (the radio pauses), and a click or Esc brings it back. Space
+pauses the film while fullscreen. SUB and AUDIO step through the subtitle and sound tracks.
+Play on a film or an episode puts it on the set with sound; when it ends the channel comes
+back. Leaving Home pauses a film and switches a channel off. POWER turns the set off, and
+`KATALOG_TV=0` starts the window with it off. Without X11 (Wayland) a click on the set opens
+the channel in mpv's own window.
+
+    GET  /api/channels                 the three channels: what is on now and next
+    GET  /api/channels/{n}/watch       how to join channel n now, with mpv's --start
+
 ### Flags
 
 | Flag | Env | Default | Meaning |

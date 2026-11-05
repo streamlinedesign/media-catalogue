@@ -285,7 +285,7 @@ async fn run() -> Result<()> {
             let shows = get("/api/shows".into()).await?;
             let found = shows.as_array().and_then(|a| {
                 a.iter()
-                    .find(|s| s["id"].to_string() == *name)
+                    .find(|s| s["id"].as_i64().is_some_and(|i| i.to_string() == *name))
                     .or_else(|| {
                         a.iter().find(|s| {
                             s["title"]
@@ -1033,7 +1033,7 @@ fn find_by_title(list: &Value, name: &str) -> Option<i64> {
     let a = list.as_array()?;
     let n = name.to_lowercase();
     a.iter()
-        .find(|x| x["id"].to_string() == name)
+        .find(|x| x["id"].as_i64().is_some_and(|i| i.to_string() == name))
         .or_else(|| {
             a.iter()
                 .find(|x| x["title"].as_str().is_some_and(|t| t.to_lowercase() == n))

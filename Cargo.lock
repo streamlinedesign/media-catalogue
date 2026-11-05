@@ -2397,9 +2397,11 @@ dependencies = [
  "clap",
  "iced",
  "image 0.25.10",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
+ "x11rb",
 ]
 
 [[package]]

@@ -4,6 +4,11 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- A television on Home: three channels always on (Films, Series, and
+  Everything), scheduled like the radio. mpv draws inside the set on X11,
+  muted until a click makes it fullscreen with sound; Play puts a film on
+  the set. SUB, AUDIO and POWER keys; `KATALOG_TV=0` starts it off.
+  `/api/channels` and `/api/channels/{n}/watch`.
 - Watching: Play on a film, or a click on an episode, opens it in mpv
   with English subtitles on when there are any and none otherwise; music
   pauses. `katalog watch <film>` and `katalog watch <show> s01e02` do the

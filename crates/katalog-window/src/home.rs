@@ -36,6 +36,8 @@ const DIAL_LO: f32 = 87.5;
 const DIAL_HI: f32 = 108.0;
 const COVER_MAX: f32 = 320.0;
 const BOTTOM_H: f32 = 196.0;
+/// The right-hand column: the set, then the lists.
+const SIDE_W: f32 = 340.0;
 
 fn mono<'a>(s: impl ToString, size: f32, color: Color) -> iced::widget::Text<'a> {
     text(s.to_string())
@@ -87,7 +89,12 @@ impl App {
         let top = row![
             container(self.home_now(cover)).width(Length::Fixed(cover)),
             container(self.home_deck()).width(Length::Fill),
-            container(self.home_side()).width(Length::Fixed(340.0)),
+            container(
+                column![self.home_tv(), self.home_side()]
+                    .spacing(20)
+                    .height(Length::Fill)
+            )
+            .width(Length::Fixed(SIDE_W)),
         ]
         .spacing(40)
         .height(Length::Fill);
@@ -104,7 +111,16 @@ impl App {
                 .height(Length::Fill),
         )
         .padding([32, 40])
-        .style(style::filled_text(SCREEN, G))
+        // A shade apart after the set moves (see `Tv::repaint`): the whole
+        // page counts as changed and is drawn again, also where mpv was.
+        .style(style::filled_text(
+            if self.tv.repaint.is_multiple_of(2) {
+                SCREEN
+            } else {
+                Color::from_rgb8(5, 5, 6)
+            },
+            G,
+        ))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -116,6 +132,8 @@ impl App {
             (Tab::Albums, "Albums"),
             (Tab::Artists, "Artists"),
             (Tab::Playlists, "Playlists"),
+            (Tab::Movies, "Movies"),
+            (Tab::Tv, "TV"),
             (Tab::Queue, "Queue"),
             (Tab::Lyrics, "Lyrics"),
         ];
@@ -351,6 +369,140 @@ impl App {
     }
 
     /// Up next, the playlists, and the shelf.
+    /// The television: the picture (mpv's, when it can draw in the window),
+    /// what is on, and its keys.
+    fn home_tv(&self) -> Element<'_, Message> {
+        use crate::tv::On;
+        let w = SIDE_W;
+        let h = (w * 9.0 / 16.0).round();
+        let ch = self.channels.get(self.tv.channel);
+        let now = ch.and_then(|c| c.now.as_ref());
+        // Under mpv's picture iced draws black; without one, a card.
+        let picture: Element<Message> = if self.tv.embedded() {
+            container(Space::new(Length::Fill, Length::Fill))
+                .style(style::filled(Color::BLACK))
+                .into()
+        } else {
+            let (title, sub) = match (&self.tv.on, now) {
+                _ if !self.tv.power => ("OFF".to_string(), String::new()),
+                (On::Asked(t), _) => (t.clone(), String::new()),
+                (_, Some(s)) => (s.title.clone(), s.subtitle.clone().unwrap_or_default()),
+                _ => (
+                    "NO SIGNAL".to_string(),
+                    "nothing with a known length yet".into(),
+                ),
+            };
+            let hint = if self.tv.power && now.is_some() {
+                if self.tv.standalone || self.tv.parent.is_none() {
+                    "click to watch"
+                } else {
+                    "tuning in"
+                }
+            } else {
+                ""
+            };
+            container(
+                column![
+                    mono(title, 16.0, G).font(MONO_MEDIUM),
+                    mono(sub, 11.0, DIM),
+                    vertical_space(),
+                    mono(hint, 11.0, DIM),
+                ]
+                .height(Length::Fill),
+            )
+            .padding(14)
+            .style(style::filled(Color::BLACK))
+            .into()
+        };
+        let set = crate::tv::screen(
+            container(picture)
+                .width(Length::Fixed(w))
+                .height(Length::Fixed(h)),
+            Message::TvArea,
+            Message::TvClick,
+        );
+        let line = match (&self.tv.on, now) {
+            (On::Asked(t), _) => format!("playing · {t}"),
+            (_, Some(s)) => {
+                let mut l = s.title.clone();
+                if let Some(sub) = &s.subtitle {
+                    l.push_str(&format!(" · {sub}"));
+                }
+                l
+            }
+            _ => String::new(),
+        };
+        let when = match now {
+            Some(s) if !matches!(self.tv.on, On::Asked(_)) => {
+                format!("{} / {}", fmt_ms(s.position_ms), fmt_ms(s.duration_ms))
+            }
+            _ => String::new(),
+        };
+        let key = |l: &str, lit: bool, m: Message| {
+            button(
+                container(mono(l, 11.0, if lit { SCREEN } else { G }).font(MONO_MEDIUM))
+                    .center_y(Length::Fixed(26.0))
+                    .padding([0, 9]),
+            )
+            .style(move |t, s| {
+                let mut st = style::screen_key(t, s);
+                if lit {
+                    st.background = Some(G.into());
+                    st.border.color = G;
+                }
+                st
+            })
+            .padding(0)
+            .on_press(m)
+        };
+        let mut keys = row![].spacing(6).align_y(Alignment::Center);
+        for (i, c) in self.channels.iter().enumerate() {
+            let lit = self.tv.power && i == self.tv.channel && !matches!(self.tv.on, On::Asked(_));
+            keys = keys.push(key(
+                &format!("{} {}", c.number, c.name.to_uppercase()),
+                lit,
+                Message::TvChannel(i),
+            ));
+        }
+        keys = keys.push(horizontal_space());
+        let tools = row![
+            key("SUB", false, Message::TvCycle("sub")),
+            key("AUDIO", false, Message::TvCycle("audio")),
+            horizontal_space(),
+            key("POWER", self.tv.power, Message::TvPower),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        column![
+            row![
+                label("Television"),
+                horizontal_space(),
+                mono(
+                    ch.map(|c| format!("ch {} · {}", c.number, c.name.to_lowercase()))
+                        .unwrap_or_default(),
+                    11.0,
+                    DIM
+                ),
+            ],
+            Space::with_height(8),
+            set,
+            Space::with_height(8),
+            row![
+                container(mono(line, 12.0, G).wrapping(iced::widget::text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true),
+                mono(when, 11.0, DIM),
+            ]
+            .spacing(8),
+            Space::with_height(8),
+            keys,
+            Space::with_height(6),
+            tools,
+        ]
+        .width(Length::Fixed(w))
+        .into()
+    }
+
     fn home_side(&self) -> Element<'_, Message> {
         let tab = |s: Side, name: &str| {
             let lit = self.side == s;
