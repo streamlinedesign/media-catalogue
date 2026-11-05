@@ -170,6 +170,9 @@ enum Message {
     PlaylistChanged(Result<PlaylistWithTracks, String>),
     RemoveFromPlaylist(i64, usize),
     DeletePlaylist(i64),
+    /// Put a playlist on the radio dial, or take it off.
+    SetStation(i64, bool),
+    StationSet(Result<serde_json::Value, String>),
     PlaylistDeleted(Result<serde_json::Value, String>),
     PlayPlaylist(i64, usize),
     AddPlaylist(i64),
@@ -703,6 +706,24 @@ impl App {
                     },
                     Message::PlaylistDeleted,
                 )
+            }
+            Message::SetStation(id, on) => {
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.put::<serde_json::Value>(
+                            &format!("/api/playlists/{id}"),
+                            serde_json::json!({ "station": on }),
+                        )
+                        .await
+                    },
+                    Message::StationSet,
+                )
+            }
+            Message::StationSet(Ok(_)) => self.load_playlists(),
+            Message::StationSet(Err(e)) => {
+                self.error = Some(e);
+                Task::none()
             }
             Message::PlaylistDeleted(Ok(_)) => self.load_playlists(),
             Message::PlaylistDeleted(Err(e)) => {
@@ -1850,6 +1871,17 @@ impl App {
             chip("Radio off", Message::RadioOff)
         } else {
             chip("Radio", Message::RadioOn(Some(p.id)))
+        });
+        // The live dial reads the list, so show the list's flag, not the open copy's.
+        let station = self
+            .playlists
+            .iter()
+            .find(|x| x.id == p.id)
+            .map_or(p.station, |x| x.station);
+        actions = actions.push(Space::with_width(8)).push(if station {
+            chip("On the dial", Message::SetStation(p.id, false))
+        } else {
+            chip("Off the dial", Message::SetStation(p.id, true))
         });
         actions = actions
             .push(horizontal_space())

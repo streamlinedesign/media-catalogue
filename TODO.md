@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.8.0: playlists can be kept off the dial
 - 0.7.0: the CRT overlay
 - 0.6.0: a stream address per station
 - 0.5.0: stations, always on, joined live

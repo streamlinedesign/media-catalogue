@@ -4,6 +4,10 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- A playlist can be taken off the radio dial: the "On the dial" chip on
+  its page, `katalog playlist-station <name> on|off`, or
+  `PUT /api/playlists/{id}` with `{"station": false}`. Playlists from
+  before stay on.
 - Window: a CRT overlay over the whole window, scanlines and a soft
   vignette, drawn once per size and taking no input. `c` turns it off and
   on; `KATALOG_CRT=0` starts without it.

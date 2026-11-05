@@ -189,6 +189,12 @@ enum Cmd {
     PlaylistDelete {
         name: String,
     },
+    /// Put a playlist on the radio dial, or take it off
+    PlaylistStation {
+        name: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Every station (each playlist, and the whole library) and what is on it now
     Stations,
     /// Tune in to a station: a playlist, or the whole library, joined live,
@@ -358,6 +364,15 @@ async fn run() -> Result<()> {
             )
             .await?
         }
+        Cmd::PlaylistStation { name, state } => {
+            let p = find_playlist(&http, base, name).await?;
+            put_json(
+                &http,
+                format!("{base}/api/playlists/{}", p["id"]),
+                serde_json::json!({ "station": state == "on" }),
+            )
+            .await?
+        }
         Cmd::PlaylistDelete { name } => {
             let p = find_playlist(&http, base, name).await?;
             delete(&http, format!("{base}/api/playlists/{}", p["id"])).await?
@@ -502,7 +517,18 @@ async fn run() -> Result<()> {
         | Cmd::Radio { .. }
         | Cmd::Clear => print_now(&value, None),
         Cmd::Stations => print_stations(&value, base),
-        Cmd::Playlists => print_rows(&value, &["id", "name", "track_count", "duration_ms"]),
+        Cmd::Playlists => print_rows(
+            &value,
+            &["id", "name", "track_count", "duration_ms", "station"],
+        ),
+        Cmd::PlaylistStation { .. } => println!(
+            "{}",
+            if value["station"].as_bool().unwrap_or(true) {
+                "on the dial"
+            } else {
+                "off the dial"
+            }
+        ),
         Cmd::Playlist { .. } | Cmd::PlaylistAdd { .. } | Cmd::PlaylistRemove { .. } => {
             print_playlist(&value)
         }
