@@ -63,9 +63,15 @@ Without a GPU it falls back to software rendering (`ICED_BACKEND=tiny-skia` forc
     katalog now                        # track, position bar, format, the current lyric line
     katalog toggle | pause | resume | next | prev | stop
     katalog seek 1:30 | seek +10 | seek -10
-    katalog volume 80                  # 100 leaves the samples untouched
+    katalog volume 80                  # the card's own volume, as alsamixer shows it
     katalog queue | jump 4 | remove 4 | clear
     katalog devices                    # what --device can be set to
+
+Volume turns the sound card's own control (Master, PCM, or whatever the card has), the one
+alsamixer shows, with the same numbers and the same loudness curve, so the samples are never
+touched and playback stays bit-perfect at every volume. A turn in alsamixer shows up in the
+window. A card with no volume control of its own falls back to scaling the samples, which is
+bit-perfect only at 100.
 
 Playback goes straight to ALSA. With `--device auto` (the default) katalogd picks the first
 hardware output that is not HDMI and opens it as `hw:`, at the file's own sample rate and bit

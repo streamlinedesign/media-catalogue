@@ -140,6 +140,9 @@ struct App {
     side: home::Side,
     tuned: usize,
     on_air: Vec<OnAir>,
+    /// When the volume was last changed here: until a moment after, the
+    /// player's answers may predate the change and must not undo it.
+    volume_set: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -257,6 +260,7 @@ impl App {
             side: home::Side::Next,
             tuned: 0,
             on_air: Vec::new(),
+            volume_set: None,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -719,6 +723,13 @@ impl App {
                 let track_changed =
                     p.track.as_ref().map(|t| t.id) != self.player.track.as_ref().map(|t| t.id);
                 let queue_changed = p.queue != self.player.queue;
+                let mut p = p;
+                if self
+                    .volume_set
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(1500))
+                {
+                    p.volume = self.player.volume;
+                }
                 self.player = p;
                 self.error = None;
                 let mut tasks = Vec::new();
@@ -971,6 +982,7 @@ impl App {
                 let next = ((now + step) as f32 / 5.0).round() as i32 * 5;
                 let v = next.clamp(0, 100) as f32 / 100.0;
                 self.player.volume = v;
+                self.volume_set = Some(std::time::Instant::now());
                 self.player_post(&format!("/api/player/volume?v={v}"), None)
             }
             Message::Next => self.player_post("/api/player/next", None),

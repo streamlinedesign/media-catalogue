@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Volume now turns the sound card's own mixer control, the one alsamixer
+  shows, with alsamixer's numbers and curve; playback stays bit-perfect at
+  every volume. Cards without a control still scale the samples. The player
+  status says which (`hw_volume`).
+- Window: holding `+` or `−` no longer snaps the volume back; a status that
+  predates the change is not allowed to undo it.
 - Home: the cover is shown as it is, not tinted green.
 - Spectrum: each analysis is stamped with the moment the card plays it and
   the window asks 30 times a second, so the bars no longer trail or stutter
