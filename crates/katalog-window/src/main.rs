@@ -10,9 +10,11 @@
 //!   space: play/pause   n / p: next, previous   + / -: volume   r: radio   c: CRT   esc: back
 
 mod api;
+mod catalogue;
 mod crt;
 mod home;
 mod icons;
+mod screen;
 mod style;
 mod tv;
 mod video;
@@ -69,19 +71,35 @@ pub(crate) const ROW_GAP: f32 = 32.0;
 /// Below the cover: title row, rule, artist line.
 const CARD_TEXT_H: f32 = 70.0;
 const THUMB: u32 = 320;
-/// The cover on Home.
+/// The cover on Music.
 const HOME_ART: u32 = 640;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Home,
-    Albums,
-    Artists,
-    Playlists,
-    Movies,
-    Tv,
-    Queue,
+    /// The home for music: the dashboard.
+    Music,
+    /// The home for films and shows: the set, the guide, tonight's film.
+    Screen,
+    /// Albums, films and shows on one page, and their own pages.
+    Catalogue,
+    Settings,
+    /// The whole lyrics of the playing song, and the search for them.
     Lyrics,
+}
+
+/// Which settings page: each in its catalogue colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsPage {
+    Music,
+    Screen,
+}
+
+/// A section of the catalogue, for its index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Section {
+    Albums,
+    Films,
+    Shows,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,7 +155,7 @@ struct App {
     fake: bool,
     fake_nolyrics: bool,
     height: f32,
-    /// Home: the spectrum, the shelf and for which album, the green covers,
+    /// Music: the spectrum, the shelf and for which album, the green covers,
     /// the list on the right, the station the receiver is tuned to.
     levels: Vec<f32>,
     picks: Vec<Pick>,
@@ -156,6 +174,9 @@ struct App {
     open_movie: Option<i64>,
     show_open: Option<i64>,
     open_show: Option<ShowWithEpisodes>,
+    settings: SettingsPage,
+    /// What the last scan or fetch from Settings came to.
+    run_note: Option<String>,
     /// How many times "Another" was pressed on tonight's film.
     tonight_skip: usize,
     /// The mpv showing a film or an episode, if one is open.
@@ -210,6 +231,13 @@ enum Message {
     Tab(Tab),
     OpenAlbum(i64),
     OpenArtist(i64),
+    /// A settings page.
+    Settings(SettingsPage),
+    /// To a section of the catalogue.
+    JumpTo(Section),
+    /// A scan or fetch from Settings, and what it came to.
+    Run(&'static str),
+    Ran(Result<serde_json::Value, String>),
     Back,
     PlayAlbum(i64, usize),
     AddAlbum(i64),
@@ -249,7 +277,7 @@ enum Message {
     Xid(u64),
     Scale(f32),
     Channels(Result<Vec<Channel>, String>),
-    /// Where the set is on Home.
+    /// Where the set is on Screen.
     TvArea(iced::Rectangle),
     TvClick,
     /// A click anywhere, which ends fullscreen.
@@ -282,7 +310,7 @@ impl App {
             adding_in: Vec::new(),
             query: String::new(),
             artist_filter: None,
-            tab: Tab::Home,
+            tab: Tab::Music,
             view: View::Grid,
             player: Player::default(),
             queue: None,
@@ -322,6 +350,8 @@ impl App {
             open_movie: None,
             show_open: None,
             open_show: None,
+            settings: SettingsPage::Music,
+            run_note: None,
             mpv: None,
             tonight_skip: 0,
             tv: tv::Tv::default(),
@@ -358,16 +388,20 @@ impl App {
                     Some(("show", id)) => id.parse().ok().map(Message::OpenShow),
                     Some(("watch", id)) => id.parse().ok().map(|id| Message::Watch(false, id)),
                     _ => match part {
-                        "playlists" => Some(Message::Tab(Tab::Playlists)),
-                        "home" => Some(Message::Tab(Tab::Home)),
-                        "albums" => Some(Message::Tab(Tab::Albums)),
+                        "playlists" => Some(Message::Settings(SettingsPage::Music)),
+                        "home" | "music" => Some(Message::Tab(Tab::Music)),
+                        "albums" | "catalogue" => Some(Message::Tab(Tab::Catalogue)),
+                        "screen" => Some(Message::Tab(Tab::Screen)),
+                        "settings" => Some(Message::Settings(SettingsPage::Music)),
+                        "screen-settings" => Some(Message::Settings(SettingsPage::Screen)),
+                        "films" => Some(Message::JumpTo(Section::Films)),
+                        "shows" => Some(Message::JumpTo(Section::Shows)),
                         "foryou" => Some(Message::Side(home::Side::ForYou)),
                         "lists" => Some(Message::Side(home::Side::Playlists)),
-                        "queue" => Some(Message::Tab(Tab::Queue)),
+                        "queue" => Some(Message::Settings(SettingsPage::Music)),
                         "lyrics" => Some(Message::Tab(Tab::Lyrics)),
-                        "artists" => Some(Message::Tab(Tab::Artists)),
-                        "movies" => Some(Message::Tab(Tab::Movies)),
-                        "tv" => Some(Message::Tab(Tab::Tv)),
+                        "movies" => Some(Message::JumpTo(Section::Films)),
+                        "tv" => Some(Message::JumpTo(Section::Shows)),
                         "fake" => Some(Message::DebugFake),
                         "search" => Some(Message::LyricsSearch(true)),
                         "nolyrics" => Some(Message::DebugNoLyrics),
@@ -423,14 +457,14 @@ impl App {
         )
     }
 
-    /// Keeps the set on its channel: starts it when Home shows, follows the
+    /// Keeps the set on its channel: starts it when Screen shows, follows the
     /// schedule to the next film or episode, and comes back to the channel
     /// when something asked for has ended. Without X11 it waits for a click.
     fn tv_follow(&mut self) -> Task<Message> {
         if !self.tv.power || self.tv.standalone || self.tv.parent.is_none() {
             return Task::none();
         }
-        let visible = self.tab == Tab::Home || self.tv.full;
+        let visible = self.tab == Tab::Screen || self.tv.full;
         let playing = self.tv.playing();
         match self.tv.on.clone() {
             tv::On::Asked(_) if playing => Task::none(),
@@ -620,12 +654,12 @@ impl App {
     }
 
     fn columns(&self) -> usize {
-        let inner = (self.width - 2.0 * GUTTER + CARD_GAP).max(CARD_MIN);
+        let inner = (self.grid_width() + CARD_GAP).max(CARD_MIN);
         ((inner / (CARD_MIN + CARD_GAP)).floor() as usize).clamp(2, 8)
     }
     fn card_width(&self) -> f32 {
         let cols = self.columns() as f32;
-        ((self.width - 2.0 * GUTTER) - CARD_GAP * (cols - 1.0)) / cols
+        (self.grid_width() - CARD_GAP * (cols - 1.0)) / cols
     }
 
     fn filtered_albums(&self) -> Vec<&Album> {
@@ -646,23 +680,20 @@ impl App {
             .collect()
     }
 
-    fn filtered_artists(&self) -> Vec<&Artist> {
-        let q = self.query.trim().to_lowercase();
-        self.artists
-            .iter()
-            .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q))
-            .collect()
-    }
-
     /// Covers for the albums in view, plus a row above and below.
     fn load_visible_art(&mut self) -> Task<Message> {
-        if self.tab != Tab::Albums || self.view != View::Grid {
+        if self.tab != Tab::Catalogue
+            || self.view != View::Grid
+            || self.open_movie.is_some()
+            || self.show_open.is_some()
+        {
             return Task::none();
         }
         let cols = self.columns();
         let row_h = self.card_width() + CARD_TEXT_H + ROW_GAP;
-        let first_row = ((self.grid_scroll / row_h).floor() as usize).saturating_sub(1);
-        let last_row = ((self.grid_scroll + self.grid_height) / row_h).ceil() as usize + 1;
+        let y = (self.grid_scroll - self.albums_grid_top()).max(0.0);
+        let first_row = ((y / row_h).floor() as usize).saturating_sub(1);
+        let last_row = ((y + self.grid_height) / row_h).ceil() as usize + 1;
         let ids: Vec<i64> = self
             .filtered_albums()
             .iter()
@@ -686,11 +717,11 @@ impl App {
         task
     }
 
-    /// Off Home the set is hidden: a channel nobody can see is not worth
+    /// Off Screen the set is hidden: a channel nobody can see is not worth
     /// decoding, and a film waits for you to come back.
     fn tv_tab_changed(&mut self) {
         let asked = matches!(self.tv.on, tv::On::Asked(_));
-        if self.tab != Tab::Home {
+        if self.tab != Tab::Screen {
             self.tv.area = None;
             if !self.tv.full {
                 if asked {
@@ -725,10 +756,10 @@ impl App {
                     tasks.push(self.load_playlists());
                 }
                 tasks.push(self.load_visible_art());
-                if (self.tab == Tab::Home || self.tv.full) && self.ticks % 4 == 3 {
+                if (self.tab == Tab::Screen || self.tv.full) && self.ticks % 4 == 3 {
                     tasks.push(self.load_channels());
                 }
-                if self.tab == Tab::Home && self.ticks % 4 == 1 {
+                if self.tab == Tab::Music && self.ticks % 4 == 1 {
                     tasks.push(self.load_on_air());
                 }
                 if self.ticks == 10 && self.screenshot.is_some() {
@@ -804,7 +835,8 @@ impl App {
                 Task::none()
             }
             Message::OpenPlaylist(id) => {
-                self.tab = Tab::Playlists;
+                self.tab = Tab::Settings;
+                self.settings = SettingsPage::Music;
                 self.list_view = ListView::One(id);
                 self.adding = None;
                 if self.open_playlist.as_ref().map(|p| p.playlist.id) != Some(id) {
@@ -1164,9 +1196,7 @@ impl App {
             Message::Search(q) => {
                 self.query = q;
                 self.view = View::Grid;
-                if self.tab == Tab::Queue || self.tab == Tab::Lyrics || self.tab == Tab::Playlists {
-                    self.tab = Tab::Albums;
-                }
+                self.tab = Tab::Catalogue;
                 self.open_movie = None;
                 self.show_open = None;
                 self.grid_scroll = 0.0;
@@ -1179,43 +1209,85 @@ impl App {
                 ])
             }
             Message::Tab(t) => {
-                if t == Tab::Albums && self.tab == Tab::Albums && self.view != View::Grid {
-                    // Already on Albums, looking at one album: the tab is the way back.
+                if t == self.tab {
+                    // The tab again is the way back to its first page.
                     self.view = View::Grid;
-                }
-                if t == Tab::Playlists && self.tab == Tab::Playlists {
-                    self.list_view = ListView::All;
-                }
-                if t == Tab::Movies && self.tab == Tab::Movies {
                     self.open_movie = None;
-                }
-                if t == Tab::Tv && self.tab == Tab::Tv {
                     self.show_open = None;
+                    self.list_view = ListView::All;
                 }
                 self.adding = None;
                 self.tab = t;
-                if t == Tab::Playlists {
-                    return self.load_playlists();
+                match t {
+                    Tab::Settings => Task::batch([self.load_playlists(), self.load_queue()]),
+                    Tab::Catalogue => Task::batch([self.load_posters(), self.load_visible_art()]),
+                    Tab::Screen => self.load_posters(),
+                    _ => Task::none(),
                 }
-                if t == Tab::Queue {
-                    return self.load_queue();
-                }
-                if t == Tab::Movies || t == Tab::Tv {
-                    return self.load_posters();
-                }
-                self.load_visible_art()
+            }
+            Message::Settings(page) => {
+                self.settings = page;
+                self.list_view = ListView::All;
+                self.adding = None;
+                self.tab = Tab::Settings;
+                Task::batch([
+                    self.load_playlists(),
+                    self.load_queue(),
+                    self.load_posters(),
+                ])
+            }
+            Message::Run(path) => {
+                self.run_note = Some(if path.contains("scan") {
+                    "scanning…".into()
+                } else {
+                    "fetching…".into()
+                });
+                let c = self.client.clone();
+                Task::perform(
+                    async move { c.post::<serde_json::Value>(path, None).await },
+                    Message::Ran,
+                )
+            }
+            Message::Ran(r) => {
+                self.run_note = Some(match r {
+                    Ok(v) => summary(&v),
+                    Err(e) => e,
+                });
+                Task::batch([self.load_status(), self.load_albums(), self.load_video()])
+            }
+            Message::JumpTo(section) => {
+                self.tab = Tab::Catalogue;
+                self.view = View::Grid;
+                self.open_movie = None;
+                self.show_open = None;
+                self.grid_scroll = self.section_top(section);
+                Task::batch([
+                    scrollable::scroll_to(
+                        scrollable::Id::new("grid"),
+                        scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: self.grid_scroll,
+                        },
+                    ),
+                    self.load_posters(),
+                    self.load_visible_art(),
+                ])
             }
             Message::OpenAlbum(id) => {
                 self.view = View::Album(id);
-                self.tab = Tab::Albums;
+                self.open_movie = None;
+                self.show_open = None;
+                self.tab = Tab::Catalogue;
                 self.open_album = None;
                 self.load_album(id)
             }
             Message::OpenArtist(id) => {
                 self.artist_filter = Some(id);
                 self.query.clear();
-                self.tab = Tab::Albums;
+                self.tab = Tab::Catalogue;
                 self.view = View::Grid;
+                self.open_movie = None;
+                self.show_open = None;
                 self.grid_scroll = 0.0;
                 self.load_visible_art()
             }
@@ -1229,12 +1301,16 @@ impl App {
             }
             Message::Movies(Err(_)) | Message::Shows(Err(_)) => Task::none(),
             Message::OpenMovie(id) => {
-                self.tab = Tab::Movies;
+                self.tab = Tab::Catalogue;
+                self.view = View::Grid;
+                self.show_open = None;
                 self.open_movie = Some(id);
                 self.load_posters()
             }
             Message::OpenShow(id) => {
-                self.tab = Tab::Tv;
+                self.tab = Tab::Catalogue;
+                self.view = View::Grid;
+                self.open_movie = None;
                 self.show_open = Some(id);
                 let c = self.client.clone();
                 Task::batch([
@@ -1261,7 +1337,7 @@ impl App {
                 if let Err(e) = self.tv.play(&args, tv::On::Asked(w.title.clone()), false) {
                     self.error = Some(e);
                 }
-                self.tab = Tab::Home;
+                self.tab = Tab::Screen;
                 self.tv_sound(true)
             }
             Message::Watching(Ok(w)) => {
@@ -1309,7 +1385,7 @@ impl App {
             }
             Message::Channels(Err(_)) => Task::none(),
             Message::TvArea(r) => {
-                if self.tab == Tab::Home {
+                if self.tab == Tab::Screen {
                     self.tv.area = Some(r);
                     self.tv.place();
                 }
@@ -1407,11 +1483,13 @@ impl App {
             Message::Back => {
                 if self.adding.is_some() {
                     self.adding = None;
-                } else if self.tab == Tab::Movies && self.open_movie.is_some() {
+                } else if self.tab == Tab::Lyrics {
+                    self.tab = Tab::Music;
+                } else if self.tab == Tab::Catalogue && self.open_movie.is_some() {
                     self.open_movie = None;
-                } else if self.tab == Tab::Tv && self.show_open.is_some() {
+                } else if self.tab == Tab::Catalogue && self.show_open.is_some() {
                     self.show_open = None;
-                } else if self.tab == Tab::Playlists && self.list_view != ListView::All {
+                } else if self.tab == Tab::Settings && self.list_view != ListView::All {
                     self.list_view = ListView::All;
                 } else if self.view != View::Grid {
                     self.view = View::Grid;
@@ -1628,7 +1706,7 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         let spectrum =
-            if self.tab == Tab::Home && self.player.state == PlayState::Playing && !self.fake {
+            if self.tab == Tab::Music && self.player.state == PlayState::Playing && !self.fake {
                 iced::time::every(Duration::from_millis(33)).map(|_| Message::LevelsTick)
             } else {
                 Subscription::none()
@@ -1680,27 +1758,38 @@ impl App {
     }
 
     fn page(&self) -> Element<'_, Message> {
-        if self.tab == Tab::Home {
-            return self.home_view();
-        }
-        let body: Element<Message> = match (self.tab, &self.view) {
-            (Tab::Home, _) => unreachable!("drawn above"),
-            (Tab::Albums, View::Album(id)) => self.album_view(*id),
-            (Tab::Albums, View::Grid) => self.grid_view(),
-            (Tab::Artists, _) => self.artists_view(),
-            (Tab::Playlists, _) => match self.list_view {
-                ListView::All => self.playlists_view(),
-                ListView::One(id) => self.playlist_view(id),
-            },
-            (Tab::Movies, _) => self.movies_view(),
-            (Tab::Tv, _) => self.tv_view(),
-            (Tab::Queue, _) => self.queue_view(),
-            (Tab::Lyrics, _) => self.lyrics_view(),
+        let (body, bg): (Element<Message>, Option<iced::Color>) = match self.tab {
+            Tab::Music => return self.home_view(),
+            Tab::Screen => return self.screen_view(),
+            Tab::Lyrics => (self.lyrics_view(), None),
+            Tab::Settings => (self.settings_view(), None),
+            Tab::Catalogue => {
+                if let View::Album(id) = self.view {
+                    (self.album_view(id), None)
+                } else if let Some(m) = self
+                    .open_movie
+                    .and_then(|id| self.movies.iter().find(|m| m.id == id))
+                {
+                    (self.movie_view(m), Some(catalogue::FILMS))
+                } else if self.show_open.is_some() {
+                    let page: Element<Message> = match self
+                        .open_show
+                        .as_ref()
+                        .filter(|s| Some(s.show.id) == self.show_open)
+                    {
+                        Some(open) => self.show_view(&open.show, &open.episodes),
+                        None => Space::new(Length::Fill, Length::Fill).into(),
+                    };
+                    (page, Some(style::WINE))
+                } else {
+                    (self.catalogue_view(), Some(style::NAVY))
+                }
+            }
         };
         let page = column![self.header(), body, self.now_playing()]
             .width(Length::Fill)
             .height(Length::Fill);
-        match video::page_color(self.tab) {
+        match bg {
             Some(bg) => container(page).style(style::filled(bg)).into(),
             None => page.into(),
         }
@@ -1716,9 +1805,7 @@ impl App {
             .and_then(|id| self.artists.iter().find(|a| a.id == id))
         {
             Some(a) => format!("Albums by {}", a.name),
-            None if self.tab == Tab::Movies => "Search films, years, genres".to_string(),
-            None if self.tab == Tab::Tv => "Search shows, years, genres".to_string(),
-            None => "Search albums, artists, years".to_string(),
+            None => "Search albums, artists, films, shows, years".to_string(),
         };
         let search = text_input(&placeholder, &self.query)
             .id(text_input::Id::new("search"))
@@ -1730,17 +1817,10 @@ impl App {
         let search =
             column![search, horizontal_rule(2).style(style::rule_px(CREAM, 2))].width(Length::Fill);
 
-        let total = match self.tab {
-            Tab::Movies | Tab::Tv => {
-                format!("{} films · {} shows", self.status.movies, self.status.shows)
-            }
-            _ => format!(
-                "{} albums · {} tracks · {}",
-                self.status.albums,
-                self.status.tracks,
-                fmt_long(self.status.duration_ms)
-            ),
-        };
+        let total = format!(
+            "{} albums · {} films · {} shows",
+            self.status.albums, self.status.movies, self.status.shows
+        );
         let top = row![
             wordmark,
             Space::with_width(GUTTER),
@@ -1750,44 +1830,17 @@ impl App {
         ]
         .align_y(Alignment::End);
 
-        let lyrics_note = match &self.lyrics {
-            Some(l) if l.synced => "synced".to_string(),
-            Some(_) => "plain".to_string(),
-            None if self.player.track.is_some() => "none".to_string(),
-            None => String::new(),
-        };
+        let catalogue = self.filtered_albums().len()
+            + self.filtered_movies().len()
+            + self.filtered_shows().len();
         let tabs = row![
-            self.tab_button(Tab::Home, "Home", String::new()),
+            self.tab_button(Tab::Music, "Music", String::new()),
             Space::with_width(CARD_GAP),
-            self.tab_button(
-                Tab::Albums,
-                "Albums",
-                self.filtered_albums().len().to_string()
-            ),
+            self.tab_button(Tab::Screen, "Screen", String::new()),
             Space::with_width(CARD_GAP),
-            self.tab_button(
-                Tab::Artists,
-                "Artists",
-                self.filtered_artists().len().to_string()
-            ),
+            self.tab_button(Tab::Catalogue, "Catalogue", catalogue.to_string()),
             Space::with_width(CARD_GAP),
-            self.tab_button(
-                Tab::Playlists,
-                "Playlists",
-                self.playlists.len().to_string()
-            ),
-            Space::with_width(CARD_GAP),
-            self.tab_button(
-                Tab::Movies,
-                "Movies",
-                self.filtered_movies().len().to_string()
-            ),
-            Space::with_width(CARD_GAP),
-            self.tab_button(Tab::Tv, "TV", self.filtered_shows().len().to_string()),
-            Space::with_width(CARD_GAP),
-            self.tab_button(Tab::Queue, "Queue", self.player.queue.len().to_string()),
-            Space::with_width(CARD_GAP),
-            self.tab_button(Tab::Lyrics, "Lyrics", lyrics_note),
+            self.tab_button(Tab::Settings, "Settings", String::new()),
             horizontal_space(),
         ];
 
@@ -1847,57 +1900,6 @@ impl App {
             .padding(0)
             .on_press(Message::Tab(tab))
             .into()
-    }
-
-    fn grid_view(&self) -> Element<'_, Message> {
-        let albums = self.filtered_albums();
-        let cols = self.columns();
-        let w = self.card_width();
-        if albums.is_empty() {
-            return container(
-                column![
-                    text("Nothing found").size(44).font(BLACK).line_height(0.9),
-                    Space::with_height(12),
-                    horizontal_rule(2).style(style::rule_px(CREAM, 2)),
-                    Space::with_height(24),
-                    text(if self.albums.is_empty() {
-                        "The library is empty or katalogd is still scanning."
-                    } else {
-                        "Try fewer words, or an artist, or a year."
-                    })
-                    .size(15)
-                    .color(alpha(CREAM, 0.8)),
-                ]
-                .max_width(640.0),
-            )
-            .padding(iced::Padding::new(GUTTER).top(64.0))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
-        }
-        let mut grid = column![].spacing(ROW_GAP);
-        for chunk in albums.chunks(cols) {
-            let mut r = row![].spacing(CARD_GAP);
-            for a in chunk {
-                r = r.push(self.album_card(a, w));
-            }
-            // Keep the last row's cards the same size as the others.
-            for _ in chunk.len()..cols {
-                r = r.push(Space::with_width(Length::Fixed(w)));
-            }
-            grid = grid.push(r);
-        }
-        scrollable(container(grid).padding(iced::Padding {
-            top: 32.0,
-            right: GUTTER,
-            bottom: 48.0,
-            left: GUTTER,
-        }))
-        .id(scrollable::Id::new("grid"))
-        .on_scroll(Message::GridScrolled)
-        .style(style::scroll(CREAM))
-        .height(Length::Fill)
-        .into()
     }
 
     fn cover<'a>(
@@ -2205,16 +2207,15 @@ impl App {
             .padding([4, 0])
             .style(style::search);
         let head = row![
-            column![new, horizontal_rule(1).style(style::hairline(CREAM))]
-                .width(Length::Fixed(280.0)),
+            column![new, horizontal_rule(1).style(style::hairline(CREAM))].width(Length::Fill),
             Space::with_width(16),
             chip("Make it", Message::CreatePlaylist),
-            horizontal_space(),
+            Space::with_width(8),
             chip(
                 if self.player.radio.is_some() {
                     "Radio off"
                 } else {
-                    "Radio: everything"
+                    "Radio"
                 },
                 if self.player.radio.is_some() {
                     Message::RadioOff
@@ -2379,56 +2380,10 @@ impl App {
         .into()
     }
 
-    fn artists_view(&self) -> Element<'_, Message> {
-        let mut list = column![];
-        for a in self.filtered_artists() {
-            let r = row![
-                text(a.name.clone()).size(20).line_height(1.1),
-                horizontal_space(),
-                text(format!(
-                    "{} {} · {} tracks",
-                    a.album_count,
-                    if a.album_count == 1 {
-                        "album"
-                    } else {
-                        "albums"
-                    },
-                    a.track_count
-                ))
-                .size(13)
-                .color(alpha(CREAM, 0.8)),
-            ]
-            .align_y(Alignment::End);
-            list = list.push(
-                button(
-                    column![
-                        Space::with_height(14),
-                        r,
-                        Space::with_height(6),
-                        horizontal_rule(1).style(style::hairline(CREAM)),
-                    ]
-                    .width(Length::Fill),
-                )
-                .style(style::plain)
-                .padding(0)
-                .on_press(Message::OpenArtist(a.id)),
-            );
-        }
-        scrollable(container(list).padding(iced::Padding {
-            top: 24.0,
-            right: GUTTER,
-            bottom: 48.0,
-            left: GUTTER,
-        }))
-        .style(style::scroll(CREAM))
-        .height(Length::Fill)
-        .into()
-    }
-
     fn queue_view(&self) -> Element<'_, Message> {
-        let Some(q) = &self.queue else {
+        let Some(q) = self.queue.as_ref().filter(|q| !q.tracks.is_empty()) else {
             return container(
-                text("Nothing queued. Open an album and press Play, or press r for the radio.")
+                text("Nothing queued. Play an album, or press r for the radio.")
                     .size(15)
                     .color(alpha(CREAM, 0.8)),
             )
@@ -2903,6 +2858,25 @@ impl App {
 const LYRIC_LINE_H: f32 = 38.0;
 
 /// Percent-encoding for a query value.
+/// One line for what a scan or fetch did, from its report.
+fn summary(v: &serde_json::Value) -> String {
+    let mut parts = vec![];
+    if let Some(o) = v.as_object() {
+        for (k, val) in o {
+            if let Some(n) = val.as_i64() {
+                if n > 0 {
+                    parts.push(format!("{} {}", n, k.replace('_', " ")));
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        "done, nothing new".into()
+    } else {
+        format!("done: {}", parts.join(", "))
+    }
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

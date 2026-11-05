@@ -1,4 +1,4 @@
-//! The television on Home: three channels on a schedule, and whatever film or
+//! The television on Screen: three channels on a schedule, and whatever film or
 //! episode was last played, shown by mpv inside the window.
 //!
 //! On X11 the set is a child window of Katalog's own, and mpv draws into it
@@ -7,7 +7,7 @@
 //! fullscreen, another (or Esc) brings it back. Where there is no X11 the
 //! set shows what is on, and playing opens mpv in a window of its own.
 //!
-//! On Home the set plays its channel without sound; fullscreen, or a film
+//! On Screen the set plays its channel without sound; fullscreen, or a film
 //! you asked for, has sound. The radio pauses for either.
 
 use iced::advanced::layout::{self, Layout};
@@ -127,7 +127,7 @@ pub struct Tv {
     /// so the card stays free for the music.
     pub sound: bool,
     pub full: bool,
-    /// Where the set is on Home, in logical pixels, when Home is showing.
+    /// Where the set is on Screen, in logical pixels, when Screen is showing.
     pub area: Option<Rectangle>,
     pub window: Size,
     /// Bumped when the picture leaves a place, so the page is drawn again
@@ -202,7 +202,7 @@ impl Tv {
         self.embed.as_ref().map(|e| e.win)
     }
 
-    /// Puts the picture where it belongs: the whole window, the set on Home,
+    /// Puts the picture where it belongs: the whole window, the set on Screen,
     /// or nowhere.
     pub fn place(&mut self) {
         let s = self.scale;
@@ -337,7 +337,7 @@ impl Drop for Tv {
     }
 }
 
-/// The place for the picture on Home. It tells the app where it is laid out
+/// The place for the picture on Screen. It tells the app where it is laid out
 /// (mpv's window follows) and when it is clicked.
 pub struct Screen<'a, Message> {
     content: Element<'a, Message>,

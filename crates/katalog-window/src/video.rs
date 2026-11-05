@@ -1,26 +1,18 @@
-//! The Movies and TV tabs: posters on a grid, and a page for each film and
-//! show. Films sit on black, TV on wine, as in the first catalogue's bar menu.
+//! Films and shows: posters, tonight's film, and a page for each film and
+//! show. Films sit on black, shows on wine, as in the first catalogue's bar
+//! menu.
 
 use crate::api::{fmt_long, fmt_ms, Episode, Movie, Show};
-use crate::{chip, style, App, Message, Tab, CARD_GAP, GUTTER, ROW_GAP};
+use crate::{chip, style, App, Message, Tab, GUTTER};
 use iced::widget::{
     column, container, horizontal_rule, horizontal_space, image, mouse_area, row, scrollable, text,
     Space,
 };
-use iced::{Alignment, Color, Element, Length};
+use iced::{Alignment, Element, Length};
 use style::{alpha, BLACK, BOLD, CREAM};
 
 /// Poster thumbnails: fetched uncropped, so they keep their 2:3.
 pub const POSTER: u32 = 480;
-
-/// The page colour behind each tab.
-pub fn page_color(tab: Tab) -> Option<Color> {
-    match tab {
-        Tab::Movies => Some(Color::from_rgb8(0x05, 0x05, 0x05)),
-        Tab::Tv => Some(style::WINE),
-        _ => None,
-    }
-}
 
 fn matches(q: &str, title: &str, year: Option<i64>, genres: &[String]) -> bool {
     q.is_empty()
@@ -30,7 +22,7 @@ fn matches(q: &str, title: &str, year: Option<i64>, genres: &[String]) -> bool {
 }
 
 /// "1 h 49 min"; short test clips in seconds.
-fn length(ms: i64) -> String {
+pub(crate) fn length(ms: i64) -> String {
     if ms >= 60_000 {
         fmt_long(ms)
     } else {
@@ -39,7 +31,7 @@ fn length(ms: i64) -> String {
 }
 
 /// "Horror, Science Fiction" → "Horror · Science Fiction".
-fn genres(g: &[String]) -> String {
+pub(crate) fn genres(g: &[String]) -> String {
     g.join(" · ")
 }
 
@@ -84,28 +76,43 @@ impl App {
             .collect()
     }
 
-    /// Posters for everything on the tab. A few hundred small JPEGs at most.
+    /// Every poster, for the pages that show them. A few hundred small
+    /// JPEGs at most.
     pub(crate) fn load_posters(&mut self) -> iced::Task<Message> {
-        let ids: Vec<i64> = match self.tab {
-            Tab::Movies => self.movies.iter().filter_map(|m| m.poster_id).collect(),
-            Tab::Tv => self.shows.iter().filter_map(|s| s.poster_id).collect(),
-            _ => return iced::Task::none(),
-        };
+        if self.tab == Tab::Music || self.tab == Tab::Lyrics {
+            return iced::Task::none();
+        }
+        let ids: Vec<i64> = self
+            .movies
+            .iter()
+            .filter_map(|m| m.poster_id)
+            .chain(self.shows.iter().filter_map(|s| s.poster_id))
+            .collect();
         iced::Task::batch(ids.into_iter().map(|id| self.want_art(id, POSTER)))
     }
 
-    fn poster<'a>(&self, id: Option<i64>, title: &str, seed: i64, w: f32) -> Element<'a, Message> {
+    pub(crate) fn poster<'a>(
+        &self,
+        id: Option<i64>,
+        title: &str,
+        seed: i64,
+        w: f32,
+    ) -> Element<'a, Message> {
         let h = (w * 1.5).round();
         if let Some(handle) = id.and_then(|id| self.art.get(&(id, POSTER))) {
             return container(
                 image(handle.clone())
                     .width(Length::Fixed(w))
                     .height(Length::Fixed(h))
-                    .content_fit(iced::ContentFit::Cover),
+                    // Contain, not Cover: a picture that overflows its box is
+                    // drawn on a layer of its own, which escapes the clip of a
+                    // scrolled page. Posters are 2:3 anyway.
+                    .content_fit(iced::ContentFit::Contain),
             )
             .width(Length::Fixed(w))
             .height(Length::Fixed(h))
-            .clip(true)
+            .center_x(Length::Fixed(w))
+            .style(style::filled(iced::Color::BLACK))
             .into();
         }
         // No poster: the title set big, like a title card.
@@ -134,7 +141,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn poster_card<'a>(
+    pub(crate) fn poster_card<'a>(
         &self,
         poster_id: Option<i64>,
         title: &str,
@@ -207,214 +214,6 @@ impl App {
         Some(pool[i])
     }
 
-    fn tonight_view<'a>(&self, m: &'a Movie) -> Element<'a, Message> {
-        let w = self.card_width().clamp(160.0, 260.0);
-        let mut meta = vec![];
-        if let Some(d) = &m.released {
-            meta.push(d.clone());
-        } else if let Some(y) = m.year {
-            meta.push(y.to_string());
-        }
-        if m.duration_ms > 0 {
-            meta.push(length(m.duration_ms));
-        }
-        if !m.genres.is_empty() {
-            meta.push(genres(&m.genres));
-        }
-        let mut info = column![
-            text("Tonight's film").size(15).line_height(1.2),
-            Space::with_height(6),
-            horizontal_rule(2).style(style::rule_px(CREAM, 2)),
-            Space::with_height(14),
-            text(m.title.clone())
-                .size(if m.title.len() > 28 { 36 } else { 52 })
-                .font(BLACK)
-                .line_height(0.9),
-            Space::with_height(12),
-            text(meta.join(" · ")).size(14).color(alpha(CREAM, 0.85)),
-            Space::with_height(16),
-        ];
-        if let Some(o) = &m.overview {
-            // A taste, not the whole blurb.
-            let short: String = if o.chars().count() > 280 {
-                let cut: String = o.chars().take(280).collect();
-                format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a))
-            } else {
-                o.clone()
-            };
-            info = info
-                .push(text(short).size(16).line_height(1.4))
-                .push(Space::with_height(20));
-        }
-        info = info.push(row![
-            chip("Play now", Message::Watch(false, m.id)),
-            Space::with_width(8),
-            chip("More", Message::OpenMovie(m.id)),
-            Space::with_width(8),
-            chip("Another", Message::TonightNext),
-        ]);
-        column![
-            row![
-                mouse_area(self.poster(m.poster_id, &m.title, m.id, w))
-                    .on_press(Message::OpenMovie(m.id))
-                    .interaction(iced::mouse::Interaction::Pointer),
-                Space::with_width(GUTTER),
-                info.width(Length::Fill).max_width(720.0),
-            ],
-            Space::with_height(40),
-            text("All films").size(15),
-            Space::with_height(6),
-            horizontal_rule(1).style(style::hairline(CREAM)),
-        ]
-        .into()
-    }
-
-    fn poster_grid<'a>(
-        &self,
-        cards: Vec<Element<'a, Message>>,
-        empty: &str,
-    ) -> Element<'a, Message> {
-        self.poster_grid_with(None, cards, empty)
-    }
-
-    fn poster_grid_with<'a>(
-        &self,
-        head: Option<Element<'a, Message>>,
-        cards: Vec<Element<'a, Message>>,
-        empty: &str,
-    ) -> Element<'a, Message> {
-        if cards.is_empty() {
-            return container(
-                column![
-                    text("Nothing found").size(44).font(BLACK).line_height(0.9),
-                    Space::with_height(12),
-                    horizontal_rule(2).style(style::rule_px(CREAM, 2)),
-                    Space::with_height(24),
-                    text(empty.to_string()).size(15).color(alpha(CREAM, 0.8)),
-                ]
-                .max_width(640.0),
-            )
-            .padding(iced::Padding::new(GUTTER).top(64.0))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
-        }
-        let cols = self.columns();
-        let w = self.card_width();
-        let mut grid = column![].spacing(ROW_GAP);
-        if let Some(h) = head {
-            grid = grid.push(h);
-        }
-        let mut cards = cards.into_iter().peekable();
-        while cards.peek().is_some() {
-            let mut r = row![].spacing(CARD_GAP);
-            let mut n = 0;
-            for c in cards.by_ref().take(cols) {
-                r = r.push(c);
-                n += 1;
-            }
-            for _ in n..cols {
-                r = r.push(Space::with_width(Length::Fixed(w)));
-            }
-            grid = grid.push(r);
-        }
-        scrollable(container(grid).padding(iced::Padding {
-            top: 32.0,
-            right: GUTTER,
-            bottom: 48.0,
-            left: GUTTER,
-        }))
-        .style(style::scroll(CREAM))
-        .height(Length::Fill)
-        .into()
-    }
-
-    pub(crate) fn movies_view(&self) -> Element<'_, Message> {
-        if let Some(m) = self
-            .open_movie
-            .and_then(|id| self.movies.iter().find(|m| m.id == id))
-        {
-            return self.movie_view(m);
-        }
-        let w = self.card_width();
-        let cards = self
-            .filtered_movies()
-            .into_iter()
-            .map(|m| {
-                let mut foot = vec![];
-                if m.duration_ms > 0 {
-                    foot.push(length(m.duration_ms));
-                }
-                if let Some(g) = m.genres.first() {
-                    foot.push(g.clone());
-                }
-                self.poster_card(
-                    m.poster_id,
-                    &m.title,
-                    m.year.map(|y| y.to_string()).unwrap_or_default(),
-                    foot.join(" · "),
-                    m.id,
-                    w,
-                    Message::OpenMovie(m.id),
-                )
-            })
-            .collect();
-        // Tonight's film heads the grid, unless a search is on.
-        let head = if self.query.trim().is_empty() {
-            self.tonight().map(|m| self.tonight_view(m))
-        } else {
-            None
-        };
-        self.poster_grid_with(
-            head,
-            cards,
-            if self.movies.is_empty() {
-                "No films yet. katalogd reads them from Movies/ next to Music/."
-            } else {
-                "Try fewer words, a year, or a genre."
-            },
-        )
-    }
-
-    pub(crate) fn tv_view(&self) -> Element<'_, Message> {
-        if let Some(open) = self
-            .open_show
-            .as_ref()
-            .filter(|s| Some(s.show.id) == self.show_open)
-        {
-            return self.show_view(&open.show, &open.episodes);
-        }
-        let w = self.card_width();
-        let cards = self
-            .filtered_shows()
-            .into_iter()
-            .map(|s| {
-                let seasons = if s.seasons == 1 {
-                    "1 season".to_string()
-                } else {
-                    format!("{} seasons", s.seasons)
-                };
-                self.poster_card(
-                    s.poster_id,
-                    &s.title,
-                    s.year.map(|y| y.to_string()).unwrap_or_default(),
-                    format!("{seasons} · {} episodes", s.episode_count),
-                    s.id,
-                    w,
-                    Message::OpenShow(s.id),
-                )
-            })
-            .collect();
-        self.poster_grid(
-            cards,
-            if self.shows.is_empty() {
-                "No shows yet. katalogd reads them from TV-Shows/ next to Music/, one folder a show."
-            } else {
-                "Try fewer words, a year, or a genre."
-            },
-        )
-    }
-
     /// The left column of a film or show page: the poster, as big as fits.
     fn page_side(&self) -> f32 {
         ((self.width - 2.0 * GUTTER) * 0.28).clamp(220.0, 400.0)
@@ -439,7 +238,7 @@ impl App {
         .into()
     }
 
-    fn movie_view<'a>(&'a self, m: &'a Movie) -> Element<'a, Message> {
+    pub(crate) fn movie_view<'a>(&'a self, m: &'a Movie) -> Element<'a, Message> {
         let side = self.page_side();
         let mut meta = vec![];
         if let Some(d) = &m.released {
@@ -456,7 +255,7 @@ impl App {
             row![
                 chip("Play", Message::Watch(false, m.id)),
                 Space::with_width(8),
-                chip("All films", Message::Back)
+                chip("Back", Message::Back)
             ],
             Space::with_height(28),
         ];
@@ -487,7 +286,11 @@ impl App {
         .into()
     }
 
-    fn show_view<'a>(&'a self, s: &'a Show, episodes: &'a [Episode]) -> Element<'a, Message> {
+    pub(crate) fn show_view<'a>(
+        &'a self,
+        s: &'a Show,
+        episodes: &'a [Episode],
+    ) -> Element<'a, Message> {
         let side = self.page_side();
         let mut meta = vec![];
         if let Some(d) = &s.first_aired {
@@ -505,7 +308,7 @@ impl App {
                     Message::Watch(true, episodes.first().map_or(0, |e| e.id))
                 ),
                 Space::with_width(8),
-                chip("All shows", Message::Back)
+                chip("Back", Message::Back)
             ],
             Space::with_height(28),
         ];

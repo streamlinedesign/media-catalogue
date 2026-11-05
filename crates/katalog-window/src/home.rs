@@ -1,4 +1,4 @@
-//! Home: the dashboard. Green phosphor on a black screen, IBM Plex Mono, after
+//! Music: the dashboard. Green phosphor on a black screen, IBM Plex Mono, after
 //! the Spectra-69 "Minimal" board: the cover and what is playing, a plain
 //! spectrum with the transport under it, what comes next, the lyrics, and a
 //! receiver whose stations are the playlists.
@@ -39,7 +39,7 @@ const BOTTOM_H: f32 = 196.0;
 /// The right-hand column: the set, then the lists.
 const SIDE_W: f32 = 340.0;
 
-fn mono<'a>(s: impl ToString, size: f32, color: Color) -> iced::widget::Text<'a> {
+pub(crate) fn mono<'a>(s: impl ToString, size: f32, color: Color) -> iced::widget::Text<'a> {
     text(s.to_string())
         .size(size)
         .font(MONO)
@@ -47,11 +47,11 @@ fn mono<'a>(s: impl ToString, size: f32, color: Color) -> iced::widget::Text<'a>
         .line_height(1.3)
 }
 
-fn label<'a>(s: &str) -> iced::widget::Text<'a> {
+pub(crate) fn label<'a>(s: &str) -> iced::widget::Text<'a> {
     mono(s.to_uppercase(), 11.0, DIM).font(MONO_MEDIUM)
 }
 
-fn rule<'a>() -> Element<'a, Message> {
+pub(crate) fn rule<'a>() -> Element<'a, Message> {
     horizontal_rule(1).style(style::hairline(LINE)).into()
 }
 
@@ -89,12 +89,7 @@ impl App {
         let top = row![
             container(self.home_now(cover)).width(Length::Fixed(cover)),
             container(self.home_deck()).width(Length::Fill),
-            container(
-                column![self.home_tv(), self.home_side()]
-                    .spacing(20)
-                    .height(Length::Fill)
-            )
-            .width(Length::Fixed(SIDE_W)),
+            container(column![self.home_side()].height(Length::Fill)).width(Length::Fixed(SIDE_W)),
         ]
         .spacing(40)
         .height(Length::Fill);
@@ -111,31 +106,18 @@ impl App {
                 .height(Length::Fill),
         )
         .padding([32, 40])
-        // A shade apart after the set moves (see `Tv::repaint`): the whole
-        // page counts as changed and is drawn again, also where mpv was.
-        .style(style::filled_text(
-            if self.tv.repaint.is_multiple_of(2) {
-                SCREEN
-            } else {
-                Color::from_rgb8(5, 5, 6)
-            },
-            G,
-        ))
+        .style(style::filled_text(SCREEN, G))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
     }
 
-    fn home_header(&self) -> Element<'_, Message> {
+    pub(crate) fn home_header(&self) -> Element<'_, Message> {
         let tabs = [
-            (Tab::Home, "Home"),
-            (Tab::Albums, "Albums"),
-            (Tab::Artists, "Artists"),
-            (Tab::Playlists, "Playlists"),
-            (Tab::Movies, "Movies"),
-            (Tab::Tv, "TV"),
-            (Tab::Queue, "Queue"),
-            (Tab::Lyrics, "Lyrics"),
+            (Tab::Music, "Music"),
+            (Tab::Screen, "Screen"),
+            (Tab::Catalogue, "Catalogue"),
+            (Tab::Settings, "Settings"),
         ];
         let mut nav = row![].spacing(24).align_y(Alignment::Center);
         for (t, name) in tabs {
@@ -153,19 +135,39 @@ impl App {
                 .on_press(Message::Tab(t)),
             );
         }
-        let source = match (&self.player.radio, &self.player.track) {
-            (Some(r), _) => format!("radio · {}", r.name),
-            (None, Some(t)) => t.album.clone(),
-            (None, None) => "idle".into(),
+        let (what, source) = if self.tab == Tab::Screen {
+            let ch = self.channels.get(self.tv.channel);
+            let on = match (&self.tv.on, ch) {
+                _ if !self.tv.power => "off".to_string(),
+                (crate::tv::On::Asked(t), _) => t.clone(),
+                (_, Some(c)) => format!("ch {} · {}", c.number, c.name.to_lowercase()),
+                _ => "nothing on".into(),
+            };
+            ("On the set", on)
+        } else {
+            let s = match (&self.player.radio, &self.player.track) {
+                (Some(r), _) => format!("radio · {}", r.name),
+                (None, Some(t)) => t.album.clone(),
+                (None, None) => "idle".into(),
+            };
+            ("Source", s)
         };
         let mut line = row![
             mono("KATALOG", 14.0, G).font(MONO_MEDIUM),
             Space::with_width(16),
-            mono("home", 12.0, DIM),
+            mono(
+                if self.tab == Tab::Screen {
+                    "screen"
+                } else {
+                    "music"
+                },
+                12.0,
+                DIM
+            ),
             Space::with_width(48),
             nav,
             horizontal_space(),
-            label("Source"),
+            label(what),
             Space::with_width(10),
             mono(source, 12.0, G).wrapping(text::Wrapping::None),
         ]
@@ -371,151 +373,6 @@ impl App {
     /// Up next, the playlists, and the shelf.
     /// The television: the picture (mpv's, when it can draw in the window),
     /// what is on, and its keys.
-    fn home_tv(&self) -> Element<'_, Message> {
-        use crate::tv::On;
-        let w = SIDE_W;
-        let h = (w * 9.0 / 16.0).round();
-        let ch = self.channels.get(self.tv.channel);
-        let now = ch.and_then(|c| c.now.as_ref());
-        // Under mpv's picture iced draws black; without one, a card.
-        let picture: Element<Message> = if self.tv.embedded() {
-            container(Space::new(Length::Fill, Length::Fill))
-                .style(style::filled(Color::BLACK))
-                .into()
-        } else {
-            let (title, sub) = match (&self.tv.on, now) {
-                _ if !self.tv.power => ("OFF".to_string(), String::new()),
-                (On::Asked(t), _) => (t.clone(), String::new()),
-                (_, Some(s)) => (s.title.clone(), s.subtitle.clone().unwrap_or_default()),
-                _ => (
-                    "NO SIGNAL".to_string(),
-                    "nothing with a known length yet".into(),
-                ),
-            };
-            let hint = if self.tv.power && now.is_some() {
-                if self.tv.standalone || self.tv.parent.is_none() {
-                    "click to watch"
-                } else {
-                    "tuning in"
-                }
-            } else {
-                ""
-            };
-            container(
-                column![
-                    mono(title, 16.0, G).font(MONO_MEDIUM),
-                    mono(sub, 11.0, DIM),
-                    vertical_space(),
-                    mono(hint, 11.0, DIM),
-                ]
-                .height(Length::Fill),
-            )
-            .padding(14)
-            .style(style::filled(Color::BLACK))
-            .into()
-        };
-        let set = crate::tv::screen(
-            container(picture)
-                .width(Length::Fixed(w))
-                .height(Length::Fixed(h)),
-            Message::TvArea,
-            Message::TvClick,
-        );
-        let line = match (&self.tv.on, now) {
-            (On::Asked(t), _) => format!("playing · {t}"),
-            (_, Some(s)) => {
-                let mut l = s.title.clone();
-                if let Some(sub) = &s.subtitle {
-                    l.push_str(&format!(" · {sub}"));
-                }
-                l
-            }
-            _ => String::new(),
-        };
-        let when = match now {
-            Some(s) if !matches!(self.tv.on, On::Asked(_)) => {
-                format!("{} / {}", fmt_ms(s.position_ms), fmt_ms(s.duration_ms))
-            }
-            _ => String::new(),
-        };
-        let key = |l: &str, lit: bool, m: Message| {
-            button(
-                container(mono(l, 11.0, if lit { SCREEN } else { G }).font(MONO_MEDIUM))
-                    .center_y(Length::Fixed(26.0))
-                    .padding([0, 9]),
-            )
-            .style(move |t, s| {
-                let mut st = style::screen_key(t, s);
-                if lit {
-                    st.background = Some(G.into());
-                    st.border.color = G;
-                }
-                st
-            })
-            .padding(0)
-            .on_press(m)
-        };
-        if !self.tv.power {
-            // Off, the set folds away to one line, so the lists below move up.
-            return row![
-                label("Television"),
-                Space::with_width(10),
-                mono("off", 11.0, DIM),
-                horizontal_space(),
-                key("TURN ON", false, Message::TvPower),
-            ]
-            .align_y(Alignment::Center)
-            .width(Length::Fixed(w))
-            .into();
-        }
-        let mut keys = row![].spacing(6).align_y(Alignment::Center);
-        for (i, c) in self.channels.iter().enumerate() {
-            let lit = self.tv.power && i == self.tv.channel && !matches!(self.tv.on, On::Asked(_));
-            keys = keys.push(key(
-                &format!("{} {}", c.number, c.name.to_uppercase()),
-                lit,
-                Message::TvChannel(i),
-            ));
-        }
-        keys = keys.push(horizontal_space());
-        let tools = row![
-            key("SUB", false, Message::TvCycle("sub")),
-            key("AUDIO", false, Message::TvCycle("audio")),
-            horizontal_space(),
-            key("TURN OFF", false, Message::TvPower),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
-        column![
-            row![
-                label("Television"),
-                horizontal_space(),
-                mono(
-                    ch.map(|c| format!("ch {} · {}", c.number, c.name.to_lowercase()))
-                        .unwrap_or_default(),
-                    11.0,
-                    DIM
-                ),
-            ],
-            Space::with_height(8),
-            set,
-            Space::with_height(8),
-            row![
-                container(mono(line, 12.0, G).wrapping(iced::widget::text::Wrapping::None))
-                    .width(Length::Fill)
-                    .clip(true),
-                mono(when, 11.0, DIM),
-            ]
-            .spacing(8),
-            Space::with_height(8),
-            keys,
-            Space::with_height(6),
-            tools,
-        ]
-        .width(Length::Fixed(w))
-        .into()
-    }
-
     fn home_side(&self) -> Element<'_, Message> {
         let tab = |s: Side, name: &str| {
             let lit = self.side == s;
@@ -722,7 +579,7 @@ impl App {
                 ));
                 if self.player.track.is_some() {
                     lines = lines.push(
-                        button(mono("find them in the Lyrics tab", 13.0, DIM))
+                        button(mono("find them", 13.0, DIM))
                             .style(style::screen_link(DIM))
                             .padding(0)
                             .on_press(Message::Tab(Tab::Lyrics)),
@@ -733,7 +590,14 @@ impl App {
         column![
             rule(),
             Space::with_height(16),
-            row![label("Lyrics"), horizontal_space(), mono(tag, 11.0, DIM)],
+            row![
+                button(label("Lyrics"))
+                    .style(style::screen_link(DIM))
+                    .padding(0)
+                    .on_press(Message::Tab(Tab::Lyrics)),
+                horizontal_space(),
+                mono(tag, 11.0, DIM)
+            ],
             Space::with_height(12),
             container(lines).height(Length::Fill).clip(true),
         ]
