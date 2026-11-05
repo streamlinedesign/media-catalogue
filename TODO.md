@@ -6,8 +6,6 @@
 
 ## Next
 
-- Part 4: tonight's film, with Play now
-
 - Adopt the Streamline design system (design-system@v0.2.0) in place of Satoshi and the hand-written `web/index.css`
 - Decide the fate of the Go web catalogue: keep, fold into katalogd, or remove (then `release.yml` and `make dist` go with it)
 - Tests: the Go side has none; the Rust side only covers title and artist cleaning in `katalog-core/src/fetch.rs`
@@ -26,6 +24,7 @@
 
 ## Done
 
+- 0.12.0: tonight's film
 - 0.11.1: extras left out of films and shows; TMDB after every scan
 - 0.11.0: the television on Home, three channels
 - 0.10.0: watching films and episodes in mpv, English subtitles by default

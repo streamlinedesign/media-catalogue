@@ -156,6 +156,8 @@ struct App {
     open_movie: Option<i64>,
     show_open: Option<i64>,
     open_show: Option<ShowWithEpisodes>,
+    /// How many times "Another" was pressed on tonight's film.
+    tonight_skip: usize,
     /// The mpv showing a film or an episode, if one is open.
     mpv: Option<std::process::Child>,
     tv: tv::Tv,
@@ -255,6 +257,8 @@ enum Message {
     TvChannel(usize),
     TvTuned(usize, Result<ChannelWatch, String>),
     TvPower,
+    /// Another film for tonight.
+    TonightNext,
     /// "sub" or "audio": the next subtitle or sound track.
     TvCycle(&'static str),
 }
@@ -317,6 +321,7 @@ impl App {
             show_open: None,
             open_show: None,
             mpv: None,
+            tonight_skip: 0,
             tv: tv::Tv::default(),
             channels: Vec::new(),
             tv_full_at: None,
@@ -1327,6 +1332,10 @@ impl App {
                 // Nothing on (no films with a known length yet): stay dark.
                 self.tv.stop();
                 self.tv.place();
+                Task::none()
+            }
+            Message::TonightNext => {
+                self.tonight_skip += 1;
                 Task::none()
             }
             Message::TvPower => {

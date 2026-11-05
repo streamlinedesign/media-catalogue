@@ -177,6 +177,9 @@ then `Film.en.srt`, then a `Film.srt` with no language, which is nearly always t
 there to be read. Otherwise mpv starts without subtitles. When katalogd runs on another
 machine, mpv plays the file and its subtitles over HTTP from it.
 
+The Movies tab opens on tonight's film: one a day, the same all day, from the films with a
+poster. Play now puts it on the television, More opens its page, Another picks again.
+
 ### The television
 
 Home has a television above the lists, with three channels that are always on, worked out

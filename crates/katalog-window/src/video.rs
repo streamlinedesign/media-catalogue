@@ -185,8 +185,101 @@ impl App {
             .into()
     }
 
+    /// Tonight's film: one a day, the same all day, chosen from those with a
+    /// poster when there are any. "Another" moves on to the next pick.
+    pub(crate) fn tonight(&self) -> Option<&Movie> {
+        let pool: Vec<&Movie> = if self.movies.iter().any(|m| m.poster_id.is_some()) {
+            self.movies
+                .iter()
+                .filter(|m| m.poster_id.is_some())
+                .collect()
+        } else {
+            self.movies.iter().collect()
+        };
+        if pool.is_empty() {
+            return None;
+        }
+        let day = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / 86_400)
+            .unwrap_or(0);
+        let i = pick(day, self.tonight_skip, pool.len());
+        Some(pool[i])
+    }
+
+    fn tonight_view<'a>(&self, m: &'a Movie) -> Element<'a, Message> {
+        let w = self.card_width().clamp(160.0, 260.0);
+        let mut meta = vec![];
+        if let Some(d) = &m.released {
+            meta.push(d.clone());
+        } else if let Some(y) = m.year {
+            meta.push(y.to_string());
+        }
+        if m.duration_ms > 0 {
+            meta.push(length(m.duration_ms));
+        }
+        if !m.genres.is_empty() {
+            meta.push(genres(&m.genres));
+        }
+        let mut info = column![
+            text("Tonight's film").size(15).line_height(1.2),
+            Space::with_height(6),
+            horizontal_rule(2).style(style::rule_px(CREAM, 2)),
+            Space::with_height(14),
+            text(m.title.clone())
+                .size(if m.title.len() > 28 { 36 } else { 52 })
+                .font(BLACK)
+                .line_height(0.9),
+            Space::with_height(12),
+            text(meta.join(" · ")).size(14).color(alpha(CREAM, 0.85)),
+            Space::with_height(16),
+        ];
+        if let Some(o) = &m.overview {
+            // A taste, not the whole blurb.
+            let short: String = if o.chars().count() > 280 {
+                let cut: String = o.chars().take(280).collect();
+                format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a))
+            } else {
+                o.clone()
+            };
+            info = info
+                .push(text(short).size(16).line_height(1.4))
+                .push(Space::with_height(20));
+        }
+        info = info.push(row![
+            chip("Play now", Message::Watch(false, m.id)),
+            Space::with_width(8),
+            chip("More", Message::OpenMovie(m.id)),
+            Space::with_width(8),
+            chip("Another", Message::TonightNext),
+        ]);
+        column![
+            row![
+                mouse_area(self.poster(m.poster_id, &m.title, m.id, w))
+                    .on_press(Message::OpenMovie(m.id))
+                    .interaction(iced::mouse::Interaction::Pointer),
+                Space::with_width(GUTTER),
+                info.width(Length::Fill).max_width(720.0),
+            ],
+            Space::with_height(40),
+            text("All films").size(15),
+            Space::with_height(6),
+            horizontal_rule(1).style(style::hairline(CREAM)),
+        ]
+        .into()
+    }
+
     fn poster_grid<'a>(
         &self,
+        cards: Vec<Element<'a, Message>>,
+        empty: &str,
+    ) -> Element<'a, Message> {
+        self.poster_grid_with(None, cards, empty)
+    }
+
+    fn poster_grid_with<'a>(
+        &self,
+        head: Option<Element<'a, Message>>,
         cards: Vec<Element<'a, Message>>,
         empty: &str,
     ) -> Element<'a, Message> {
@@ -209,6 +302,9 @@ impl App {
         let cols = self.columns();
         let w = self.card_width();
         let mut grid = column![].spacing(ROW_GAP);
+        if let Some(h) = head {
+            grid = grid.push(h);
+        }
         let mut cards = cards.into_iter().peekable();
         while cards.peek().is_some() {
             let mut r = row![].spacing(CARD_GAP);
@@ -263,7 +359,14 @@ impl App {
                 )
             })
             .collect();
-        self.poster_grid(
+        // Tonight's film heads the grid, unless a search is on.
+        let head = if self.query.trim().is_empty() {
+            self.tonight().map(|m| self.tonight_view(m))
+        } else {
+            None
+        };
+        self.poster_grid_with(
+            head,
             cards,
             if self.movies.is_empty() {
                 "No films yet. katalogd reads them from Movies/ next to Music/."
@@ -481,9 +584,29 @@ impl App {
     }
 }
 
+/// The pick for a day: spread over the list, the same all day, and every
+/// "another" a different film until the list runs out.
+fn pick(day: u64, skip: usize, n: usize) -> usize {
+    let mut z = day.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    ((z % n as u64) as usize + skip) % n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tonight_is_the_same_all_day_and_another_moves_on() {
+        assert_eq!(pick(20_000, 0, 50), pick(20_000, 0, 50));
+        let seen: std::collections::HashSet<usize> = (0..50).map(|s| pick(20_000, s, 50)).collect();
+        assert_eq!(seen.len(), 50);
+        let days: std::collections::HashSet<usize> =
+            (20_000..20_030).map(|d| pick(d, 0, 50)).collect();
+        assert!(days.len() > 15, "{}", days.len());
+    }
 
     #[test]
     fn english_is_named_first() {
