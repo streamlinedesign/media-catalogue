@@ -4,6 +4,11 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Extras are no longer films or episodes. A folder that holds a film
+  holds only that film, so videos in folders below it are extras; in a
+  show only S01E02 files and `Season` folders count; Plex and Jellyfin
+  extras names are skipped everywhere. With a TMDB key, katalogd looks
+  up new films and shows after every scan by itself.
 - A television on Home: three channels always on (Films, Series, and
   Everything), scheduled like the radio. mpv draws inside the set on X11,
   muted until a click makes it fullscreen with sound; Play puts a film on

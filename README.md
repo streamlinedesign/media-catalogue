@@ -140,13 +140,29 @@ are read the way people save them:
 
 A show is a folder under `TV-Shows/`. Lengths and the languages of subtitle tracks come from
 `ffprobe` (part of ffmpeg); subtitle files beside a video (`Film.srt`, `Film.en.srt`, a `Subs/`
-folder) count too. Extras, samples and trailers are left out. A `poster.jpg` (or `folder.jpg`,
-`cover.jpg`) in the folder is the poster.
+folder) count too. A `poster.jpg` (or `folder.jpg`, `cover.jpg`) in the folder is the poster.
+
+Extras are left out:
+
+- A folder that holds a film holds only that film. Any video in a folder below it
+  (`Featurettes/`, `Behind The Scenes/`, `Bonus Disc/`, whatever its name) is an extra.
+  Collections still work: `Alien Collection/Alien (1979)/Alien (1979).mkv` is a film.
+- In a show, an episode is a file named S01E02 (or 1x02), or anything in a `Season 1` or
+  `Specials` folder. Anything else, such as `Extras/` or a promo reel at the top, is left out.
+- Anywhere, folders named the Plex and Jellyfin way (`Extras`, `Featurettes`, `Trailers`,
+  `Deleted Scenes`, `Interviews`, `Shorts`, `Other` ...) and files ending in `-trailer`,
+  `-featurette`, `-sample` and the like are extras.
+
+Extras that were counted before disappear on the next scan.
 
 Plots, release dates, genres and posters come from TMDB when katalogd has a key: put
 `TMDB_KEY=...` (a v3 API key or a v4 read token, from your password manager) in
-`~/.config/katalog/env`, restart katalogd, then `katalog fetch video`. Without one, films keep
-the names from their files.
+`~/.config/katalog/env` and restart katalogd. It then looks up anything new after each scan
+by itself; `katalog fetch video --retry` asks again about titles TMDB did not know. Without a
+key, films keep the names from their files.
+
+A key is free: make an account at themoviedb.org, then Settings, API, and ask for a developer
+key. Either the "API Key" or the "API Read Access Token" works.
 
     katalog movies [query]             # films, by title, year or genre
     katalog shows [query]

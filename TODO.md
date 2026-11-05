@@ -26,6 +26,7 @@
 
 ## Done
 
+- 0.11.1: extras left out of films and shows; TMDB after every scan
 - 0.11.0: the television on Home, three channels
 - 0.10.0: watching films and episodes in mpv, English subtitles by default
 - 0.9.0: films and TV in the catalogue
