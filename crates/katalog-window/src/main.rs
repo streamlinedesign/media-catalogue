@@ -14,8 +14,8 @@ mod icons;
 mod style;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Lyrics, PlayState, Player, Playlist,
-    PlaylistWithTracks, Queue, Status, Track,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Client, Lyrics, LyricsHit, PlayState, Player,
+    Playlist, PlaylistWithTracks, Queue, Status, Track,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -106,6 +106,13 @@ struct App {
     lyrics: Option<Lyrics>,
     lyrics_for: Option<i64>,
     lyrics_line: Option<usize>,
+    /// The lyrics search, for the playing track: the query, whether the
+    /// artist narrows it, the hits, and what is going on.
+    lyrics_query: String,
+    lyrics_with_artist: bool,
+    lyrics_hits: Vec<LyricsHit>,
+    lyrics_searching: bool,
+    lyrics_note: Option<String>,
     art: HashMap<(i64, u32), image::Handle>,
     art_loading: HashSet<(i64, u32)>,
     width: f32,
@@ -115,6 +122,7 @@ struct App {
     ticks: u64,
     screenshot: Option<String>,
     fake: bool,
+    fake_nolyrics: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +155,12 @@ enum Message {
     PlayerState(Result<Player, String>),
     QueueLoaded(Result<Queue, String>),
     LyricsLoaded(i64, Result<Lyrics, String>),
+    LyricsQuery(String),
+    /// Search LRCLIB for the playing track; `true` keeps the artist in.
+    LyricsSearch(bool),
+    LyricsHits(i64, Result<Vec<LyricsHit>, String>),
+    LyricsPick(usize),
+    LyricsSaved(i64, Result<Lyrics, String>),
     Art(i64, u32, Result<Vec<u8>, String>),
     Search(String),
     Tab(Tab),
@@ -164,6 +178,7 @@ enum Message {
     GridScrolled(scrollable::Viewport),
     Resized(f32, f32),
     DebugFake,
+    DebugNoLyrics,
     Shot(window::Screenshot),
 }
 
@@ -191,6 +206,11 @@ impl App {
             lyrics: None,
             lyrics_for: None,
             lyrics_line: None,
+            lyrics_query: String::new(),
+            lyrics_with_artist: true,
+            lyrics_hits: Vec::new(),
+            lyrics_searching: false,
+            lyrics_note: None,
             art: HashMap::new(),
             art_loading: HashSet::new(),
             width: 1280.0,
@@ -200,6 +220,7 @@ impl App {
             ticks: 0,
             screenshot: std::env::var("KATALOG_SCREENSHOT").ok(),
             fake: false,
+            fake_nolyrics: false,
         };
         let mut tasks = vec![
             app.load_status(),
@@ -224,6 +245,31 @@ impl App {
                         "lyrics" => Some(Message::Tab(Tab::Lyrics)),
                         "artists" => Some(Message::Tab(Tab::Artists)),
                         "fake" => Some(Message::DebugFake),
+                        "search" => Some(Message::LyricsSearch(true)),
+                        "nolyrics" => Some(Message::DebugNoLyrics),
+                        "fakehits" => Some(Message::LyricsHits(
+                            0,
+                            Ok(vec![
+                                LyricsHit {
+                                    source: "lrclib".into(),
+                                    title: "Paranoid Android".into(),
+                                    artist: "Radiohead".into(),
+                                    album: "OK Computer".into(),
+                                    duration_ms: Some(383_000),
+                                    synced: true,
+                                    text: "[00:14.20]Please could you stop the noise\n[00:17.00]I'm trying to get some rest".into(),
+                                },
+                                LyricsHit {
+                                    source: "lrclib".into(),
+                                    title: "Paranoid Android (Live)".into(),
+                                    artist: "Radiohead".into(),
+                                    album: "I Might Be Wrong".into(),
+                                    duration_ms: Some(401_000),
+                                    synced: false,
+                                    text: "Please could you stop the noise\nI'm trying to get some rest".into(),
+                                },
+                            ]),
+                        )),
                         _ => None,
                     },
                 };
@@ -627,6 +673,11 @@ impl App {
                         self.lyrics = None;
                         self.lyrics_line = None;
                         self.lyrics_for = Some(t.id);
+                        self.lyrics_query = t.title.clone();
+                        self.lyrics_with_artist = true;
+                        self.lyrics_hits.clear();
+                        self.lyrics_searching = false;
+                        self.lyrics_note = None;
                         if t.has_lyrics {
                             tasks.push(self.load_lyrics(t.id));
                         }
@@ -682,6 +733,84 @@ impl App {
                 Task::none()
             }
             Message::LyricsLoaded(_, Err(_)) => Task::none(),
+            Message::LyricsQuery(q) => {
+                self.lyrics_query = q;
+                Task::none()
+            }
+            Message::LyricsSearch(with_artist) => {
+                let Some(t) = self.player.track.clone() else {
+                    return Task::none();
+                };
+                let q = self.lyrics_query.trim().to_string();
+                if q.is_empty() {
+                    return Task::none();
+                }
+                self.lyrics_with_artist = with_artist;
+                self.lyrics_searching = true;
+                self.lyrics_note = None;
+                let mut path = format!("/api/tracks/{}/lyrics/search?q={}", t.id, urlencode(&q));
+                if with_artist {
+                    path.push_str(&format!("&artist={}", urlencode(&t.artist)));
+                }
+                let c = self.client.clone();
+                Task::perform(
+                    async move { c.get::<Vec<LyricsHit>>(&path).await },
+                    move |r| Message::LyricsHits(t.id, r),
+                )
+            }
+            Message::LyricsHits(id, r) => {
+                if id != 0 && self.lyrics_for != Some(id) {
+                    return Task::none();
+                }
+                self.lyrics_searching = false;
+                match r {
+                    Ok(hits) => {
+                        self.lyrics_note = if hits.is_empty() {
+                            Some("Nothing found. Try fewer words, or without the artist.".into())
+                        } else {
+                            None
+                        };
+                        self.lyrics_hits = hits;
+                    }
+                    Err(e) => {
+                        self.lyrics_hits.clear();
+                        self.lyrics_note = Some(e);
+                    }
+                }
+                Task::none()
+            }
+            Message::LyricsPick(i) => {
+                let (Some(t), Some(hit)) = (self.player.track.as_ref(), self.lyrics_hits.get(i))
+                else {
+                    return Task::none();
+                };
+                let id = t.id;
+                let body = serde_json::json!({ "text": hit.text, "source": hit.source });
+                self.lyrics_note = Some("Saving…".into());
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.put::<Lyrics>(&format!("/api/tracks/{id}/lyrics"), body)
+                            .await
+                    },
+                    move |r| Message::LyricsSaved(id, r),
+                )
+            }
+            Message::LyricsSaved(id, Ok(l)) => {
+                if self.lyrics_for == Some(id) {
+                    self.lyrics = Some(l);
+                    self.lyrics_hits.clear();
+                    self.lyrics_note = None;
+                    if let Some(t) = self.player.track.as_mut() {
+                        t.has_lyrics = true;
+                    }
+                }
+                Task::none()
+            }
+            Message::LyricsSaved(_, Err(e)) => {
+                self.lyrics_note = Some(e);
+                Task::none()
+            }
             Message::Art(id, size, Ok(bytes)) => {
                 self.art_loading.remove(&(id, size));
                 self.art
@@ -819,6 +948,19 @@ impl App {
                     text: "[00:12.00]In the next world war\n[00:17.50]In a jackknifed juggernaut\n[00:22.00]I am born again\n[00:48.00]In the neon sign\n[00:52.00]Scrolling up and down\n[00:56.00]I am born again\n[01:30.00]In an interstellar burst\n[01:35.00]I am back to save the universe\n[02:10.00]In a deep deep sleep of the innocent\n[02:15.00]I am born again\n[02:40.00]In a fast German car\n[02:44.00]I'm amazed that I survived\n[02:48.00]An airbag saved my life".into(),
                 });
                 self.lyrics_line = Some(6);
+                if self.fake_nolyrics {
+                    return Task::done(Message::DebugNoLyrics);
+                }
+                Task::none()
+            }
+            Message::DebugNoLyrics => {
+                self.fake_nolyrics = true;
+                self.lyrics = None;
+                self.lyrics_line = None;
+                if let Some(t) = self.player.track.as_mut() {
+                    t.has_lyrics = false;
+                    self.lyrics_query = t.title.clone();
+                }
                 Task::none()
             }
             Message::Shot(shot) => {
@@ -1635,18 +1777,13 @@ impl App {
                 .into();
         };
         let Some(l) = &self.lyrics else {
-            let msg = if t.has_lyrics {
-                "Loading…".to_string()
-            } else {
-                format!(
-                    "No lyrics for this one yet. In a terminal: katalog lyrics {}",
-                    t.id
-                )
-            };
-            return container(text(msg).size(15).color(alpha(CREAM, 0.8)))
-                .padding(iced::Padding::new(GUTTER).top(32.0))
-                .height(Length::Fill)
-                .into();
+            if t.has_lyrics {
+                return container(text("Loading…").size(15).color(alpha(CREAM, 0.8)))
+                    .padding(iced::Padding::new(GUTTER).top(32.0))
+                    .height(Length::Fill)
+                    .into();
+            }
+            return self.lyrics_search_view(t);
         };
         let lines = l.lines();
         let mut col = column![].spacing(0);
@@ -1719,6 +1856,148 @@ impl App {
             }),
         )
         .id(scrollable::Id::new("lyrics"))
+        .style(style::scroll(CREAM))
+        .height(Length::Fill)
+        .into()
+    }
+
+    /// No lyrics stored: a search box with the title in it, the artist as a
+    /// switch, and the hits to pick from. Picking one saves it.
+    fn lyrics_search_view(&self, t: &Track) -> Element<'_, Message> {
+        let input = text_input("Search LRCLIB", &self.lyrics_query)
+            .id(text_input::Id::new("lyrics-search"))
+            .on_input(Message::LyricsQuery)
+            .on_submit(Message::LyricsSearch(self.lyrics_with_artist))
+            .size(20)
+            .font(MEDIUM)
+            .padding([4, 0])
+            .style(style::search);
+        let input = column![input, horizontal_rule(1).style(style::hairline(CREAM))]
+            .width(Length::Fixed(420.0));
+        let artist_chip = chip(
+            &if self.lyrics_with_artist {
+                format!("by {} ✓", t.artist)
+            } else {
+                format!("by {}", t.artist)
+            },
+            Message::LyricsSearch(!self.lyrics_with_artist),
+        );
+        let head = column![
+            text(format!("No lyrics for {} · {} yet.", t.artist, t.title))
+                .size(15)
+                .color(alpha(CREAM, 0.8)),
+            Space::with_height(20),
+            row![
+                input,
+                Space::with_width(16),
+                chip(
+                    if self.lyrics_searching {
+                        "Searching…"
+                    } else {
+                        "Search"
+                    },
+                    Message::LyricsSearch(self.lyrics_with_artist)
+                ),
+                Space::with_width(8),
+                artist_chip,
+                horizontal_space(),
+            ]
+            .align_y(Alignment::Center),
+            Space::with_height(6),
+            text("Edit the words if the file's title has a remaster or a feat. in it.")
+                .size(12)
+                .color(alpha(CREAM, 0.6)),
+        ];
+
+        let mut list = column![];
+        if let Some(n) = &self.lyrics_note {
+            list = list
+                .push(Space::with_height(24))
+                .push(text(n.clone()).size(15).color(alpha(CREAM, 0.8)));
+        }
+        if !self.lyrics_hits.is_empty() {
+            list = list.push(Space::with_height(24));
+        }
+        for (i, h) in self.lyrics_hits.iter().enumerate() {
+            let same_length = match (h.duration_ms, t.duration_ms) {
+                (Some(d), have) if have > 0 => (d - have).abs() <= 5_000,
+                _ => false,
+            };
+            let first_line = h
+                .text
+                .lines()
+                .map(|l| {
+                    // Skip timestamps and tags for the preview.
+                    let l = l.trim();
+                    match l.rfind(']') {
+                        Some(p) if l.starts_with('[') => l[p + 1..].trim(),
+                        _ => l,
+                    }
+                })
+                .find(|l| !l.is_empty())
+                .unwrap_or("")
+                .to_string();
+            let r = row![
+                container(text((i + 1).to_string()).size(13).color(alpha(CREAM, 0.7)))
+                    .width(Length::Fixed(36.0))
+                    .align_x(iced::alignment::Horizontal::Right),
+                Space::with_width(16),
+                column![
+                    text(format!("{} · {}", h.artist, h.title))
+                        .size(15)
+                        .font(if same_length { BOLD } else { MEDIUM })
+                        .line_height(1.2),
+                    text(first_line)
+                        .size(13)
+                        .color(alpha(CREAM, 0.6))
+                        .line_height(1.2)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .width(Length::Fill),
+                Space::with_width(16),
+                text(h.album.clone()).size(13).color(alpha(CREAM, 0.7)),
+                Space::with_width(16),
+                text(if h.synced { "synced" } else { "plain" })
+                    .size(12)
+                    .color(alpha(CREAM, 0.6)),
+                Space::with_width(16),
+                container(
+                    text(h.duration_ms.map(fmt_ms).unwrap_or_default())
+                        .size(13)
+                        .color(alpha(CREAM, if same_length { 1.0 } else { 0.7 }))
+                )
+                .width(Length::Fixed(44.0))
+                .align_x(iced::alignment::Horizontal::Right),
+            ]
+            .align_y(Alignment::Center);
+            list = list.push(
+                button(
+                    column![
+                        Space::with_height(10),
+                        r,
+                        Space::with_height(8),
+                        horizontal_rule(1).style(style::hairline(alpha(CREAM, 0.5))),
+                    ]
+                    .width(Length::Fill),
+                )
+                .style(style::plain)
+                .padding(0)
+                .on_press(Message::LyricsPick(i)),
+            );
+        }
+        if !self.lyrics_hits.is_empty() {
+            list = list.push(Space::with_height(8)).push(
+                text("Click a hit to keep it. Bold means the length matches the file.")
+                    .size(12)
+                    .color(alpha(CREAM, 0.6)),
+            );
+        }
+        scrollable(container(column![head, list]).padding(iced::Padding {
+            top: 32.0,
+            right: GUTTER,
+            bottom: 48.0,
+            left: GUTTER,
+        }))
         .style(style::scroll(CREAM))
         .height(Length::Fill)
         .into()
@@ -1894,6 +2173,21 @@ impl App {
 }
 
 const LYRIC_LINE_H: f32 = 38.0;
+
+/// Percent-encoding for a query value.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
 
 /// An outlined button in the running text size.
 fn chip<'a>(label: &str, m: Message) -> iced::widget::Button<'a, Message> {

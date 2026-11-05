@@ -13,7 +13,6 @@
 
 - Window polish: numbers on one baseline, a right-click menu on tracks and
   albums
-- Find lyrics for the playing track from the window
 - Reorder a playlist by dragging; `katalog playlist-move`
 - Radio: a rest period and keep-count you can set; stations from tags once
   `track_tags` is in use
