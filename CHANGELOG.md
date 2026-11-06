@@ -4,6 +4,10 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Phone page: Open in VLC works on Android (an intent naming VLC; the
+  vlc:// address got mangled and VLC gave a playback error) and on iOS
+  (VLC's x-callback link). Copy link shows the file's address, sign-in
+  included, for VLC's Open network stream or any other player.
 - The phone page: with `KATALOG_WEB=0.0.0.0:4180` and `KATALOG_WEB_PASSWORD`,
   katalogd serves a page on the Wi-Fi for music (albums, playlists, a
   player with lock screen controls), films and shows (in the browser when
