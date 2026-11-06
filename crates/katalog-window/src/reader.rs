@@ -287,7 +287,7 @@ impl Prefs {
 
 // ---- turning the screen ------------------------------------------------------------
 
-/// The quarter turns of the screen, in the order Rotate steps through them.
+/// The screen's turns: upright, then a quarter turn either way.
 const TURNS: [&str; 3] = ["normal", "left", "right"];
 
 /// The laptop's own screen as xrandr names it: the primary one, else the
@@ -314,10 +314,45 @@ fn turn_screen(output: &str, turn: &str) -> Result<(), String> {
         .args(["--output", output, "--rotate", turn])
         .status()
         .map_err(|e| format!("xrandr: {e}"))?;
-    if st.success() {
-        Ok(())
-    } else {
-        Err("xrandr could not turn the screen".into())
+    if !st.success() {
+        return Err("xrandr could not turn the screen".into());
+    }
+    map_touch(output);
+    Ok(())
+}
+
+/// The screen while it is turned; dropping it turns it back.
+#[derive(Debug, Default)]
+struct Restore(Option<String>);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        if let Some(out) = self.0.take() {
+            let _ = turn_screen(&out, "normal");
+        }
+    }
+}
+
+/// xrandr turns the picture but not the touchscreen or the pen: map each of
+/// them onto the screen again, so a tap lands where the finger is.
+fn map_touch(output: &str) {
+    let Ok(out) = std::process::Command::new("xinput")
+        .args(["list", "--name-only"])
+        .output()
+    else {
+        return;
+    };
+    for name in String::from_utf8_lossy(&out.stdout).lines() {
+        let n = name.to_lowercase();
+        let pointer = ["touch", "stylus", "pen", "wacom", "elan", "finger"]
+            .iter()
+            .any(|k| n.contains(k));
+        if pointer && !n.contains("touchpad") {
+            let _ = std::process::Command::new("xinput")
+                .args(["map-to-output", name, output])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
     }
 }
 
@@ -396,6 +431,10 @@ pub struct Reader {
     output: Option<Option<String>>,
     /// Page-only rotation in quarter turns, when the screen cannot turn.
     pub page_turn: u8,
+    /// Which way Rotate turns: 1 left, 2 right (an index into TURNS).
+    dir: usize,
+    /// Holds the turned screen, to put it back if the window quits turned.
+    restore: Restore,
     pub error: Option<String>,
 }
 
@@ -413,6 +452,8 @@ impl Default for Reader {
             turn: 0,
             output: None,
             page_turn: 0,
+            dir: 1,
+            restore: Restore(None),
             error: None,
         }
     }
@@ -440,7 +481,9 @@ pub enum Msg {
     Saved(Result<(), String>),
     Word(usize, usize),
     PageSelect(i64, Point, Point),
-    PageClick(i64, Point),
+    /// A click or tap on a page: where on it (0..1), and how far across the
+    /// window it was (0..1), so a spread turns by the half of the whole view.
+    PageClick(i64, Point, f32),
     Mark(&'static str),
     Marked(Result<Highlight, String>, bool),
     OpenNote(i64),
@@ -468,6 +511,10 @@ pub enum Msg {
     Direction,
     RotateScreen,
     Rotate,
+    RotateOther,
+    /// Up or down a step: scrolls a chapter or a page shown to its width,
+    /// turns the page otherwise.
+    Step(f32),
     Chrome,
 }
 
@@ -734,6 +781,13 @@ impl Reader {
         let first = *shown.iter().min().unwrap_or(&o.page);
         let comic = o.full.book.is_comic();
         let mut t = vec![];
+        // A comic asks for the small pages it shows first: they come quickly
+        // and stand in until the big ones are drawn.
+        if comic {
+            for &p in &shown {
+                t.push(self.want_pic(c, p, true));
+            }
+        }
         for p in shown.iter().copied().chain([last + 1, last + 2, first - 1]) {
             t.push(self.want_pic(c, p, false));
             t.push(self.want_words(c, p));
@@ -949,6 +1003,38 @@ impl Reader {
         Task::batch([save, self.load(c)])
     }
 
+    /// Turns the screen to TURNS[to], or only the page when the screen cannot turn.
+    fn turn_to(&mut self, to: usize) -> Task<Msg> {
+        if self.output.is_none() {
+            self.output = Some(screen_output());
+        }
+        match (&self.output, self.prefs.rotate_screen) {
+            (Some(Some(out)), true) => match turn_screen(out, TURNS[to]) {
+                Ok(()) => {
+                    self.turn = to;
+                    self.restore.0 = (to != 0).then(|| out.clone());
+                }
+                Err(e) => self.error = Some(e),
+            },
+            _ => {
+                let epub = self
+                    .open
+                    .as_ref()
+                    .is_some_and(|o| o.full.book.format == "epub");
+                if epub {
+                    if let Some(o) = self.open.as_mut() {
+                        o.flash =
+                            Some("turning an EPUB needs the screen to turn: xrandr, on X11".into());
+                    }
+                } else {
+                    // Left is a quarter turn back, right a quarter turn on.
+                    self.page_turn = [0, 3, 1][to];
+                }
+            }
+        }
+        Task::none()
+    }
+
     /// Puts the screen back the right way up.
     pub fn unturn(&mut self) {
         if self.turn != 0 {
@@ -956,6 +1042,7 @@ impl Reader {
                 let _ = turn_screen(out, "normal");
             }
             self.turn = 0;
+            self.restore.0 = None;
         }
         self.page_turn = 0;
     }
@@ -1221,31 +1308,35 @@ impl Reader {
                 }
                 Task::none()
             }
-            Msg::PageClick(page, p) => {
+            Msg::PageClick(page, p, across) => {
+                let side_w =
+                    self.open.as_ref().map_or(
+                        0.0,
+                        |o| {
+                            if o.side != Side::None {
+                                SIDE_W
+                            } else {
+                                0.0
+                            }
+                        },
+                    );
                 let Some(o) = self.open.as_mut() else {
                     return Task::none();
                 };
+                // Which half of the view: the left half goes back, the right on
+                // (the other way round for right to left).
+                let x = across * self.window.width.max(1.0);
+                let mid = side_w + (self.window.width - side_w) / 2.0;
+                let on = (x >= mid) != (o.full.book.is_comic() && self.prefs.right_to_left);
                 if o.full.book.is_comic() {
-                    // Left third back, right third on, the middle shows the bar.
-                    let forward = if self.prefs.right_to_left {
-                        p.x < 0.33
-                    } else {
-                        p.x > 0.67
-                    };
-                    let back = if self.prefs.right_to_left {
-                        p.x > 0.67
-                    } else {
-                        p.x < 0.33
-                    };
-                    if forward {
-                        return self.turn_page(c, 1);
-                    } else if back {
-                        return self.turn_page(c, -1);
+                    // The top edge of a comic page shows or hides the bar.
+                    if p.y < 0.1 {
+                        o.chrome = !o.chrome;
+                        return Task::none();
                     }
-                    o.chrome = !o.chrome;
-                    return Task::none();
+                    return self.turn_page(c, if on { 1 } else { -1 });
                 }
-                o.sel = None;
+                let had_sel = o.sel.take().is_some();
                 let hit = o.full.highlights.iter().find(|h| {
                     h.page == page
                         && match &h.anchor {
@@ -1262,7 +1353,11 @@ impl Reader {
                     let id = h.id;
                     return self.update(Msg::OpenNote(id), c);
                 }
-                Task::none()
+                // A tap that only clears a selection does not turn the page.
+                if had_sel {
+                    return Task::none();
+                }
+                self.turn_page(c, if on { 1 } else { -1 })
             }
             Msg::Mark(color) => {
                 let Some((page, anchor, text)) = self.selection_text() else {
@@ -1548,36 +1643,40 @@ impl Reader {
                 self.prefs.save();
                 Task::none()
             }
+            // Rotate turns and turns back; the other way flips while turned.
             Msg::Rotate => {
-                if self.output.is_none() {
-                    self.output = Some(screen_output());
+                let turned = self.turn != 0 || self.page_turn != 0;
+                self.turn_to(if turned { 0 } else { self.dir })
+            }
+            Msg::RotateOther => {
+                self.dir = 3 - self.dir;
+                self.turn_to(self.dir)
+            }
+            Msg::Step(d) => {
+                let Some(o) = self.open.as_ref() else {
+                    return Task::none();
+                };
+                let epub = o.full.book.format == "epub";
+                let wide = !o.full.book.is_comic() && self.prefs.pdf_fit == Fit::Width;
+                if !epub && !wide {
+                    return self.turn_page(c, d as i64);
                 }
-                match (&self.output, self.prefs.rotate_screen) {
-                    (Some(Some(out)), true) => {
-                        let next = (self.turn + 1) % TURNS.len();
-                        match turn_screen(out, TURNS[next]) {
-                            Ok(()) => self.turn = next,
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                    _ => {
-                        let epub = self
-                            .open
-                            .as_ref()
-                            .is_some_and(|o| o.full.book.format == "epub");
-                        if epub {
-                            if let Some(o) = self.open.as_mut() {
-                                o.flash = Some(
-                                    "turning an EPUB needs the screen to turn: xrandr, on X11"
-                                        .into(),
-                                );
-                            }
-                        } else {
-                            self.page_turn = (self.page_turn + 1) % 4;
-                        }
-                    }
+                // At the very end of a chapter, down goes on to the next one.
+                if epub && d > 0.0 && o.rel >= 0.999 {
+                    return self.turn_page(c, 1);
                 }
-                Task::none()
+                let step = if epub {
+                    self.prefs.size * self.prefs.line * 3.0
+                } else {
+                    120.0
+                };
+                scrollable::scroll_by(
+                    scrollable::Id::new(if epub { "chapter" } else { "page" }),
+                    scrollable::AbsoluteOffset {
+                        x: 0.0,
+                        y: d * step,
+                    },
+                )
             }
             Msg::Chrome => {
                 if let Some(o) = self.open.as_mut() {
@@ -1605,12 +1704,10 @@ impl Reader {
     pub fn key(key: iced::keyboard::Key) -> Option<Msg> {
         use iced::keyboard::{key::Named, Key};
         Some(match key.as_ref() {
-            Key::Named(Named::ArrowRight | Named::ArrowDown | Named::PageDown | Named::Space) => {
-                Msg::Next
-            }
-            Key::Named(Named::ArrowLeft | Named::ArrowUp | Named::PageUp) => Msg::Prev,
-            Key::Character("j") => Msg::Next,
-            Key::Character("k") => Msg::Prev,
+            Key::Named(Named::ArrowRight | Named::PageDown | Named::Space) => Msg::Next,
+            Key::Named(Named::ArrowLeft | Named::PageUp) => Msg::Prev,
+            Key::Named(Named::ArrowDown) | Key::Character("j") => Msg::Step(1.0),
+            Key::Named(Named::ArrowUp) | Key::Character("k") => Msg::Step(-1.0),
             Key::Character("b") => Msg::Bookmark,
             Key::Character("d") => Msg::Dark,
             Key::Character("r") => Msg::Rotate,
@@ -1737,12 +1834,17 @@ struct PageMarks<'a> {
     marks: Vec<(Vec<[f32; 4]>, Color)>,
     sel: Option<(usize, usize)>,
     selectable: bool,
+    /// The window's width, to tell which half of it a tap was in.
+    window_w: f32,
 }
 
 #[derive(Default)]
 struct Drag {
     from: Option<Point>,
     to: Option<Point>,
+    /// A finger on the page: where it went down (window coordinates), and
+    /// whether it has moved far enough to be a scroll rather than a tap.
+    finger: Option<(Point, bool)>,
 }
 
 fn frac(p: Point, b: Rectangle) -> Point {
@@ -1763,6 +1865,43 @@ impl Program<Msg> for PageMarks<'_> {
         cursor: mouse::Cursor,
     ) -> (canvas::event::Status, Option<Msg>) {
         use canvas::event::Status;
+        use iced::touch;
+        // Fingers first: they come without a cursor. A tap turns the page or
+        // opens a highlight; a drag is left alone, so the page scrolls under it.
+        match event {
+            canvas::Event::Touch(touch::Event::FingerPressed { position, .. })
+                if bounds.contains(position) =>
+            {
+                st.finger = Some((position, false));
+                return (Status::Ignored, None);
+            }
+            canvas::Event::Touch(touch::Event::FingerMoved { position, .. }) => {
+                if let Some((at, moved)) = st.finger.as_mut() {
+                    if (position.x - at.x).abs() + (position.y - at.y).abs() > 12.0 {
+                        *moved = true;
+                    }
+                }
+                return (Status::Ignored, None);
+            }
+            canvas::Event::Touch(touch::Event::FingerLifted { position, .. }) => {
+                return match st.finger.take() {
+                    Some((_, false)) if bounds.contains(position) => (
+                        Status::Captured,
+                        Some(Msg::PageClick(
+                            self.page,
+                            frac(position, bounds),
+                            position.x / self.window_w.max(1.0),
+                        )),
+                    ),
+                    _ => (Status::Ignored, None),
+                };
+            }
+            canvas::Event::Touch(touch::Event::FingerLost { .. }) => {
+                st.finger = None;
+                return (Status::Ignored, None);
+            }
+            _ => {}
+        }
         let Some(pos) = cursor.position() else {
             return (Status::Ignored, None);
         };
@@ -1786,7 +1925,7 @@ impl Program<Msg> for PageMarks<'_> {
                 let msg = if moved && self.selectable {
                     Msg::PageSelect(self.page, a, b)
                 } else {
-                    Msg::PageClick(self.page, b)
+                    Msg::PageClick(self.page, b, pos.x / self.window_w.max(1.0))
                 };
                 (Status::Captured, Some(msg))
             }
@@ -2237,12 +2376,18 @@ impl Reader {
             ]);
         }
         let turned = self.turn != 0 || self.page_turn != 0;
+        if turned {
+            bar = bar.push(
+                row![
+                    chip("Turn back", true, Msg::Rotate),
+                    chip("Other way", false, Msg::RotateOther),
+                ]
+                .spacing(4),
+            );
+        } else {
+            bar = bar.push(chip("Rotate", false, Msg::Rotate));
+        }
         bar = bar
-            .push(chip(
-                if turned { "Rotated" } else { "Rotate" },
-                turned,
-                Msg::Rotate,
-            ))
             .push(chip(
                 if marked { "Bookmarked" } else { "Bookmark" },
                 marked,
@@ -2639,7 +2784,16 @@ impl Reader {
         let gap = 4.0;
         let mut pages = row![].spacing(gap).align_y(Alignment::Center);
         for &p in &shown {
-            let Some(pic) = o.pics.get(&(p, dark, false)) else {
+            // While a big page is on its way, its small one stands in, so
+            // there is something to look at at once.
+            let pic = o.pics.get(&(p, dark, false)).or_else(|| {
+                if comic {
+                    o.pics.get(&(p, false, true))
+                } else {
+                    None
+                }
+            });
+            let Some(pic) = pic else {
                 let (w, h) = if fit_width {
                     (area.width.min(1000.0), area.width.min(1000.0) * 1.41)
                 } else {
@@ -2697,6 +2851,7 @@ impl Reader {
                 marks,
                 sel,
                 selectable: !comic && self.page_turn == 0,
+                window_w: self.window.width,
             })
             .width(Length::Fixed(w))
             .height(Length::Fixed(h));
