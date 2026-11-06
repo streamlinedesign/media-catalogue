@@ -13,6 +13,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 image.workspace = true
+tokio.workspace = true
 # The TV: a window inside the main one for mpv to draw in. Already in the
 # tree through winit, so it costs no extra download.
 x11rb = { version = "0.13", features = ["shape"] }

@@ -263,3 +263,49 @@ pub fn screen_key(_theme: &Theme, status: button::Status) -> button::Style {
         shadow: Default::default(),
     }
 }
+
+// ---- Reading: Literata for long text ----------------------------------------
+
+pub const LITERATA_REGULAR: &[u8] = include_bytes!("../fonts/Literata-Regular.ttf");
+pub const LITERATA_ITALIC: &[u8] = include_bytes!("../fonts/Literata-Italic.ttf");
+pub const LITERATA_SEMIBOLD: &[u8] = include_bytes!("../fonts/Literata-SemiBold.ttf");
+pub const LITERATA_SEMIBOLD_ITALIC: &[u8] = include_bytes!("../fonts/Literata-SemiBoldItalic.ttf");
+
+pub const fn literata(w: Weight, italic: bool) -> Font {
+    Font {
+        family: Family::Name("Literata"),
+        weight: w,
+        stretch: iced::font::Stretch::Normal,
+        style: if italic {
+            iced::font::Style::Italic
+        } else {
+            iced::font::Style::Normal
+        },
+    }
+}
+pub const SERIF: Font = literata(Weight::Normal, false);
+pub const SERIF_BOLD: Font = literata(Weight::Semibold, false);
+
+/// Books on ochre with brown type, comics on green, as in the first catalogue.
+pub const BOOKS: Color = OCHRE;
+pub const BOOKS_INK: Color = BROWN;
+pub const COMICS: Color = GREEN;
+/// The dark reading page and its type: a shade off the ink and the paper, so
+/// a long read does not glare.
+pub const PAGE_DARK: Color = hex(0x0f0f0b);
+pub const TYPE_DARK: Color = hex(0xece7ae);
+pub const PAGE_PAPER: Color = hex(0xfffabd);
+pub const TYPE_PAPER: Color = hex(0x1a1a14);
+
+/// A title set big on a card with no picture: as big as `max`, but small enough
+/// that the longest word fits on one line of `width` (a heavy face runs about
+/// 0.62 em a letter).
+pub fn title_card_size(title: &str, width: f32, max: f32) -> f32 {
+    let longest = title
+        .split_whitespace()
+        .map(|w| w.chars().count())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    max.min(width / (longest as f32 * 0.62))
+}

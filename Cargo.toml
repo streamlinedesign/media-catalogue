@@ -28,4 +28,6 @@ clap = { version = "4", features = ["derive", "env"] }
 urlencoding = "2"
 alsa = "0.12"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
 symphonia = { version = "0.5", default-features = false, features = ["flac", "mp3", "aac", "isomp4", "ogg", "vorbis", "wav", "aiff", "pcm", "adpcm", "alac"] }

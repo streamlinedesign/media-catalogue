@@ -12,6 +12,7 @@
 mod api;
 mod onair;
 mod player;
+mod read;
 mod watch;
 
 use anyhow::{Context, Result};
@@ -257,7 +258,12 @@ pub async fn scan_paths(
     let result = tokio::task::spawn_blocking(move || {
         let library = &s.args.library;
         let video_roots = [library.join("Movies"), library.join("TV-Shows")];
+        let book_roots = [library.join("Books"), library.join("Comics")];
         let mut conn = s.db.lock();
+        let books = dirs.as_ref().is_none_or(|d| {
+            d.iter()
+                .any(|p| book_roots.iter().any(|r| p.starts_with(r)))
+        });
         let (music, video) = match &dirs {
             Some(d) => {
                 let music: Vec<PathBuf> = d
@@ -279,6 +285,9 @@ pub async fn scan_paths(
         };
         if video {
             report.video = Some(katalog_core::video::scan(&mut conn, library)?);
+        }
+        if books {
+            report.books = Some(katalog_core::books::scan(&mut conn, library)?);
         }
         Ok(report)
     })

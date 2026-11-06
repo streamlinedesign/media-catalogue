@@ -121,6 +121,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.execute_batch(SCHEMA)?;
     conn.execute_batch(crate::video::SCHEMA)?;
+    conn.execute_batch(crate::books::SCHEMA)?;
     migrate(&conn)?;
     Ok(conn)
 }

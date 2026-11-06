@@ -29,6 +29,16 @@ pub(crate) fn section_color(s: Section) -> Color {
         Section::Albums => NAVY,
         Section::Films => FILMS,
         Section::Shows => WINE,
+        Section::Books => style::BOOKS,
+        Section::Comics => style::COMICS,
+    }
+}
+
+/// The type on a section: brown on the ochre of books, cream elsewhere.
+pub(crate) fn section_fg(s: Section) -> Color {
+    match s {
+        Section::Books => style::BOOKS_INK,
+        _ => CREAM,
     }
 }
 
@@ -73,19 +83,20 @@ fn index_entry<'a>(
     .into()
 }
 
-fn section_head<'a>(title: &str, meta: String) -> Element<'a, Message> {
+fn section_head<'a>(title: &str, meta: String, fg: Color) -> Element<'a, Message> {
     container(column![
         row![
             text(title.to_string())
                 .size(40)
                 .font(BLACK)
-                .line_height(1.0),
+                .line_height(1.0)
+                .color(fg),
             Space::with_width(16),
-            text(meta).size(13).color(alpha(CREAM, 0.8)),
+            text(meta).size(13).color(alpha(fg, 0.8)),
         ]
         .align_y(Alignment::End),
         Space::with_height(10),
-        horizontal_rule(1).style(style::hairline(CREAM)),
+        horizontal_rule(1).style(style::hairline(fg)),
     ])
     .height(Length::Fixed(HEAD_H))
     .into()
@@ -110,6 +121,8 @@ impl App {
             Section::Albums => self.filtered_albums().len(),
             Section::Films => self.filtered_movies().len(),
             Section::Shows => self.filtered_shows().len(),
+            Section::Books => self.filtered_books(false).len(),
+            Section::Comics => self.filtered_books(true).len(),
         }
     }
 
@@ -131,7 +144,56 @@ impl App {
             Section::Shows => {
                 self.section_height(Section::Albums) + self.section_height(Section::Films)
             }
+            Section::Books => {
+                self.section_top(Section::Shows) + self.section_height(Section::Shows)
+            }
+            Section::Comics => {
+                self.section_top(Section::Books) + self.section_height(Section::Books)
+            }
         }
+    }
+
+    /// Books, or comics, matching the search.
+    pub(crate) fn filtered_books(&self, comics: bool) -> Vec<&crate::reader::Book> {
+        let q = self.query.trim().to_lowercase();
+        self.read
+            .books
+            .iter()
+            .filter(|b| b.is_comic() == comics && b.matches(&q))
+            .collect()
+    }
+
+    fn book_card<'a>(&self, b: &crate::reader::Book, w: f32, fg: Color) -> Element<'a, Message> {
+        let card = column![
+            self.poster(b.cover_id, &b.label(), b.id, w),
+            Space::with_height(16),
+            container(
+                text(b.label())
+                    .size(18)
+                    .font(BOLD)
+                    .line_height(1.1)
+                    .color(fg)
+                    .wrapping(text::Wrapping::None)
+            )
+            .width(Length::Fixed(w))
+            .clip(true),
+            Space::with_height(4),
+            horizontal_rule(1).style(style::hairline(fg)),
+            Space::with_height(6),
+            container(
+                text(b.byline())
+                    .size(13)
+                    .color(fg)
+                    .wrapping(text::Wrapping::None)
+            )
+            .width(Length::Fixed(w))
+            .clip(true),
+        ]
+        .width(Length::Fixed(w));
+        iced::widget::mouse_area(card)
+            .on_press(Message::Read(crate::reader::Msg::Open(b.id)))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
     }
 
     /// Where the album covers start, below the section's head.
@@ -142,11 +204,15 @@ impl App {
     /// The section the page is scrolled to.
     fn section_in_view(&self) -> Section {
         let y = self.grid_scroll + 80.0;
-        let total = self.section_top(Section::Shows) + self.section_height(Section::Shows);
+        let total = self.section_top(Section::Comics) + self.section_height(Section::Comics);
         // At the very bottom the last section may start lower than the page
         // can scroll: it is the one in view.
         let at_bottom = self.grid_scroll + self.grid_height >= total - 4.0;
-        if at_bottom || y >= self.section_top(Section::Shows) {
+        if at_bottom || y >= self.section_top(Section::Comics) {
+            Section::Comics
+        } else if y >= self.section_top(Section::Books) {
+            Section::Books
+        } else if y >= self.section_top(Section::Shows) {
             Section::Shows
         } else if y >= self.section_top(Section::Films) {
             Section::Films
@@ -185,14 +251,19 @@ impl App {
         empty: &str,
     ) -> Element<'a, Message> {
         let body: Element<Message> = if cards.is_empty() {
-            container(text(empty.to_string()).size(15).color(alpha(CREAM, 0.8)))
-                .height(Length::Fixed(EMPTY_H))
-                .into()
+            container(
+                text(empty.to_string())
+                    .size(15)
+                    .color(alpha(section_fg(s), 0.8)),
+            )
+            .height(Length::Fixed(EMPTY_H))
+            .into()
         } else {
             self.rows(cards, self.cover_h(s) + CARD_TEXT_H)
         };
+        let fg = section_fg(s);
         container(column![
-            section_head(title, meta),
+            section_head(title, meta, fg),
             Space::with_height(HEAD_GAP),
             body
         ])
@@ -202,7 +273,7 @@ impl App {
             bottom: SEC_BOTTOM,
             left: GUTTER,
         })
-        .style(style::filled_text(section_color(s), CREAM))
+        .style(style::filled_text(section_color(s), section_fg(s)))
         .width(Length::Fill)
         .into()
     }
@@ -262,6 +333,13 @@ impl App {
             })
             .collect();
         let episodes: i64 = shows.iter().map(|s| s.episode_count).sum();
+        let books = self.filtered_books(false);
+        let book_cards: Vec<_> = books
+            .iter()
+            .map(|b| self.book_card(b, w, style::BOOKS_INK))
+            .collect();
+        let comics = self.filtered_books(true);
+        let comic_cards: Vec<_> = comics.iter().map(|b| self.book_card(b, w, CREAM)).collect();
         let plural =
             |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let none = "Nothing here matches.";
@@ -317,6 +395,50 @@ impl App {
                     "No shows yet. katalogd reads them from TV-Shows/, one folder a show."
                 },
             ),
+            self.section(
+                Section::Books,
+                "Books",
+                {
+                    let mut authors: Vec<&str> =
+                        books.iter().filter_map(|b| b.author.as_deref()).collect();
+                    authors.sort_unstable();
+                    authors.dedup();
+                    let open = books.iter().filter(|b| b.progress > 0.0 && b.progress < 0.995).count();
+                    format!(
+                        "{} · {}{}",
+                        plural(books.len(), "book", "books"),
+                        plural(authors.len(), "author", "authors"),
+                        if open > 0 { format!(" · {open} open") } else { String::new() }
+                    )
+                },
+                book_cards,
+                if searching {
+                    none
+                } else {
+                    "No books yet. katalogd reads EPUB and PDF from Books/ next to Music/."
+                },
+            ),
+            self.section(
+                Section::Comics,
+                "Comics",
+                {
+                    let mut series: Vec<&str> =
+                        comics.iter().filter_map(|b| b.series.as_deref()).collect();
+                    series.sort_unstable();
+                    series.dedup();
+                    format!(
+                        "{} · {}",
+                        plural(comics.len(), "issue", "issues"),
+                        plural(series.len(), "series", "series")
+                    )
+                },
+                comic_cards,
+                if searching {
+                    none
+                } else {
+                    "No comics yet. katalogd reads CBR, CBZ and PDF from Comics/, one folder a series."
+                },
+            ),
         ];
         let lit = self.section_in_view();
         let mut index = column![
@@ -340,6 +462,20 @@ impl App {
                 "Shows",
                 shows.len().to_string(),
                 Message::JumpTo(Section::Shows)
+            ),
+            index_entry(
+                style::BOOKS,
+                lit == Section::Books,
+                "Books",
+                books.len().to_string(),
+                Message::JumpTo(Section::Books)
+            ),
+            index_entry(
+                style::COMICS,
+                lit == Section::Comics,
+                "Comics",
+                comics.len().to_string(),
+                Message::JumpTo(Section::Comics)
             ),
         ]
         .spacing(10);
@@ -397,11 +533,29 @@ impl App {
                 String::new(),
                 Message::Settings(SettingsPage::Screen)
             ),
+            index_entry(
+                style::BOOKS,
+                self.settings == SettingsPage::Read,
+                "Books",
+                String::new(),
+                Message::Settings(SettingsPage::Read)
+            ),
+            index_entry(
+                style::COMICS,
+                self.settings == SettingsPage::Read,
+                "Comics",
+                String::new(),
+                Message::Settings(SettingsPage::Read)
+            ),
         ]
         .spacing(10);
         let body = match self.settings {
             SettingsPage::Music => self.music_settings(),
             SettingsPage::Screen => self.screen_settings(),
+            SettingsPage::Read => self
+                .read
+                .settings_view(&self.status.library, self.run_note.as_deref())
+                .map(Message::Read),
         };
         row![
             container(index)

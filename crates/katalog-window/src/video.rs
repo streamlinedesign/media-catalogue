@@ -87,6 +87,7 @@ impl App {
             .iter()
             .filter_map(|m| m.poster_id)
             .chain(self.shows.iter().filter_map(|s| s.poster_id))
+            .chain(self.read.books.iter().filter_map(|b| b.cover_id))
             .collect();
         iced::Task::batch(ids.into_iter().map(|id| self.want_art(id, POSTER)))
     }
@@ -121,7 +122,7 @@ impl App {
         container(
             column![
                 text(title.to_string())
-                    .size((w * 0.14).clamp(12.0, 56.0))
+                    .size(style::title_card_size(title, w * 0.84, w * 0.14).clamp(12.0, 56.0))
                     .font(BLACK)
                     .line_height(0.9)
                     .color(fg),

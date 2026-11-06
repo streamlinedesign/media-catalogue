@@ -4,6 +4,20 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Books and comics in katalogd: it reads `Books/` (EPUB, PDF) and
+  `Comics/` (CBR, CBZ, PDF, folders of pages) next to `Music/`, with
+  titles, authors, series, issue numbers and covers. It serves EPUB
+  chapters as paragraphs, PDF and comic pages as images (dark pages on
+  request), the words on a PDF page with their boxes, and keeps where
+  you are, bookmarks, and highlights with notes.
+- The window reads them: a Read page with what you are reading, your
+  highlights and the comics on the pile, and a reader for EPUB (set in
+  Literata, with size, line height and width of your choosing), PDF (dark
+  pages, fit width, fit page, two pages) and comics (spreads, right to
+  left). Highlights in three colours with notes, as many bookmarks as you
+  like, a marks panel that copies them all as Markdown, and a rotate key
+  that turns the screen for a foldable. Books and comics also have their
+  own sections in the catalogue.
 - Subtitles from opensubtitles.com. With `OPENSUBTITLES_KEY` set, Find
   subtitles on a film's page (or "subs" beside an episode) lists what
   there is in `KATALOG_SUB_LANGS`, the ones made for this very file
