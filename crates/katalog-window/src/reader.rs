@@ -1770,6 +1770,27 @@ const FOOT_H: f32 = 44.0;
 const SIDE_W: f32 = 300.0;
 const LINE: Color = Color::from_rgba(1.0, 0.98, 0.74, 0.3);
 
+/// A page turn in the foot: a wide arrow, big enough for a finger.
+fn turn_button<'a>(arrow: &'static str, m: Msg) -> Element<'a, Msg> {
+    button(text(arrow).size(20).font(MONO))
+        .style(move |_t: &Theme, s: button::Status| {
+            let fill = matches!(s, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(if fill { CREAM } else { Color::TRANSPARENT }.into()),
+                text_color: if fill { style::CARD } else { CREAM },
+                border: iced::Border {
+                    color: CREAM,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                shadow: Default::default(),
+            }
+        })
+        .padding([5, 32])
+        .on_press(m)
+        .into()
+}
+
 fn chip<'a>(label: impl ToString, on: bool, m: Msg) -> Element<'a, Msg> {
     button(text(label.to_string()).size(12).font(MONO))
         .style(move |_t: &Theme, s: button::Status| {
@@ -2495,6 +2516,7 @@ impl Reader {
                 );
             }
             row![
+                turn_button("←", Msg::Prev),
                 strip,
                 horizontal_space(),
                 mono(
@@ -2504,7 +2526,9 @@ impl Reader {
                     12.0,
                     alpha(CREAM, 0.7)
                 ),
+                turn_button("→", Msg::Next),
             ]
+            .spacing(16)
             .align_y(Alignment::Center)
             .into()
         } else {
@@ -2537,11 +2561,11 @@ impl Reader {
                 }
             });
             row![
-                link("‹", Msg::Prev, CREAM),
+                turn_button("←", Msg::Prev),
                 mono(label, 12.0, alpha(CREAM, 0.8)),
                 line,
                 mono(right, 12.0, alpha(CREAM, 0.8)),
-                link("›", Msg::Next, CREAM),
+                turn_button("→", Msg::Next),
             ]
             .spacing(16)
             .align_y(Alignment::Center)
