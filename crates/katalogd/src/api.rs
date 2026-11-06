@@ -9,6 +9,7 @@
 //!   GET  /api/tracks/{id}/lyrics
 //!   GET  /api/tracks/{id}/lyrics/search?q=&artist=   LRCLIB hits to pick from
 //!   PUT  /api/tracks/{id}/lyrics      {"text": "...", "source": "lrclib"}  save by hand
+//!   DELETE /api/tracks/{id}/lyrics    take wrong lyrics away and keep them away
 //!   POST /api/scan                    full rescan
 //!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
 //!   GET  /art/{id}?size=256&crop=1    image bytes; with size, a JPEG no larger than that (crop: square)
@@ -75,7 +76,10 @@ pub fn router(state: Shared) -> Router {
         .route("/video/{kind}/{id}/sub/{n}", get(video_sub))
         .route("/api/tracks", get(tracks))
         .route("/api/tracks/{id}", get(track))
-        .route("/api/tracks/{id}/lyrics", get(lyrics).put(put_lyrics))
+        .route(
+            "/api/tracks/{id}/lyrics",
+            get(lyrics).put(put_lyrics).delete(delete_lyrics),
+        )
         .route("/api/tracks/{id}/lyrics/search", get(search_lyrics))
         .route("/api/tracks/{id}/playlists", get(track_playlists))
         .route("/api/playlists", get(playlists).post(create_playlist))
@@ -453,6 +457,17 @@ async fn put_lyrics(
     Ok(Json(
         db::lyrics(&conn, id)?.ok_or_else(|| not_found("lyrics"))?,
     ))
+}
+
+/// Takes a track's lyrics away; they stay away until picked by hand.
+async fn delete_lyrics(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+) -> ApiResult<serde_json::Value> {
+    let conn = s.db.lock();
+    db::track(&conn, id)?.ok_or_else(|| not_found("track"))?;
+    katalog_core::fetch::remove_lyrics(&conn, id)?;
+    Ok(Json(serde_json::json!({ "removed": id })))
 }
 
 async fn scan(State(s): State<Shared>) -> ApiResult<katalog_core::ScanReport> {

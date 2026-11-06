@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.13.4: remove wrong lyrics
 - 0.13.3: films play with no channel on; lengths from mpv when ffprobe is missing
 - 0.13.2: playback and the TV share the card without the daemon getting lost; radio off stops
 - 0.13.1: TV turns back on, TV sound works, lighter CRT

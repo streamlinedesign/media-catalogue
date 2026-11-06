@@ -153,6 +153,22 @@ pub fn save_lyrics(
     Ok(())
 }
 
+/// Takes a track's lyrics away (wrong words, bad timing) and keeps them
+/// away: neither the online lookup nor a rescan of an embedded tag or a
+/// .lrc brings them back. Picking lyrics by hand again lifts that. Files
+/// are left as they are.
+pub fn remove_lyrics(conn: &Connection, track_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM lyrics WHERE track_id = ?1", [track_id])?;
+    conn.execute(
+        "UPDATE tracks SET lyrics_tried = ?2 WHERE id = ?1",
+        params![track_id, LYRICS_REMOVED],
+    )?;
+    Ok(())
+}
+
+/// `tracks.lyrics_tried` for lyrics taken away by hand (1 is "nothing found").
+pub const LYRICS_REMOVED: i64 = 2;
+
 /// Forget earlier "nothing found" results so every album is looked up again.
 pub fn reset_art_tried(conn: &Connection) -> Result<usize> {
     Ok(conn.execute("UPDATE albums SET art_tried = 0 WHERE art_id IS NULL", [])?)
@@ -161,7 +177,8 @@ pub fn reset_art_tried(conn: &Connection) -> Result<usize> {
 /// Forget earlier "nothing found" results so every track is looked up again.
 pub fn reset_lyrics_tried(conn: &Connection) -> Result<usize> {
     Ok(conn.execute(
-        "UPDATE tracks SET lyrics_tried = 0 WHERE id NOT IN (SELECT track_id FROM lyrics)",
+        "UPDATE tracks SET lyrics_tried = 0
+         WHERE lyrics_tried = 1 AND id NOT IN (SELECT track_id FROM lyrics)",
         [],
     )?)
 }
