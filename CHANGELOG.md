@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- MKV films and episodes play in Safari on the iPhone: the phone page asks
+  for HLS, and katalogd repackages the file with ffmpeg on the fly,
+  copying the picture (H.264, HEVC as `hvc1`) and the sound when Safari
+  knows it, else stereo AAC. The last three stay in `~/.cache/katalog/hls`.
+  Text subtitles inside a file now show in the browser too, as WebVTT.
+  New: `GET /web/hls/{kind}/{id}/index.m3u8`, `GET /web/isub/{kind}/{id}/{n}`.
 - Phone page: Open in VLC works on Android (an intent naming VLC; the
   vlc:// address got mangled and VLC gave a playback error) and on iOS
   (VLC's x-callback link). Copy link shows the file's address, sign-in

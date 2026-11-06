@@ -23,6 +23,7 @@
 
 ## Done
 
+- 0.18.0: MKV in Safari on the iPhone, subtitles from inside the file
 - 0.17.1: Open in VLC from the phone page on Android and iOS, Copy link
 - 0.17.0: the phone page on the Wi-Fi
 - 0.16.1: the Go web catalogue removed; release.yml builds the Rust binaries

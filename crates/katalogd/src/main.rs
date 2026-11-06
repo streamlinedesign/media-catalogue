@@ -13,6 +13,7 @@ mod api;
 mod onair;
 mod player;
 mod read;
+mod remux;
 mod watch;
 mod web;
 

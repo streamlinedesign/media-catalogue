@@ -11,7 +11,7 @@
 //! The same token works as `?t=` for players that cannot send cookies (VLC).
 
 use crate::api::{self, ApiError};
-use crate::Shared;
+use crate::{remux, Shared};
 use axum::body::Body;
 use axum::extract::{Form, Path, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -124,6 +124,9 @@ pub fn router(state: Shared, web: Arc<Web>) -> Router {
         )
         .route("/web/subs/{kind}/{id}", get(subs_list))
         .route("/web/sub/{kind}/{id}/{n}", get(sub_vtt))
+        .route("/web/isub/{kind}/{id}/{n}", get(remux::inside_sub))
+        .route("/web/hls/{kind}/{id}/index.m3u8", get(remux::playlist))
+        .route("/web/hls/{kind}/{id}/{name}", get(remux::segment))
         .with_state(state)
         .layer(middleware::from_fn_with_state(web, guard));
     guarded
@@ -193,27 +196,47 @@ async fn logout() -> Response {
 
 #[derive(serde::Serialize)]
 struct SubFile {
-    n: usize,
+    src: String,
     lang: String,
+    label: String,
 }
 
-/// The subtitle files beside a video that a browser can show once turned
-/// into WebVTT: SubRip and WebVTT, not ASS.
+/// The subtitles a browser can show once turned into WebVTT: SubRip and
+/// WebVTT files beside the video, then the text ones inside it.
 async fn subs_list(
     State(s): State<Shared>,
     Path((kind, id)): Path<(String, i64)>,
 ) -> Result<axum::Json<Vec<SubFile>>, ApiError> {
     let path = api::video_path(&s, &kind, id).await?;
-    let list = video::sidecar_subs(std::path::Path::new(&path))
-        .into_iter()
-        .enumerate()
-        .filter(|(_, (p, _))| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("srt") || e.eq_ignore_ascii_case("vtt"))
-        })
-        .map(|(n, (_, lang))| SubFile { n, lang })
-        .collect();
+    let (k, p) = (kind.clone(), std::path::PathBuf::from(&path));
+    let list = tokio::task::spawn_blocking(move || {
+        let mut list: Vec<SubFile> = video::sidecar_subs(&p)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (f, _))| {
+                f.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("srt") || e.eq_ignore_ascii_case("vtt"))
+            })
+            .map(|(n, (_, lang))| SubFile {
+                src: format!("/web/sub/{k}/{id}/{n}"),
+                label: if lang == "?" {
+                    "Subtitles".into()
+                } else {
+                    lang.clone()
+                },
+                lang,
+            })
+            .collect();
+        list.extend(remux::inside_subs(&p).into_iter().map(|i| SubFile {
+            src: format!("/web/isub/{k}/{id}/{}", i.n),
+            lang: i.lang,
+            label: i.label,
+        }));
+        list
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(axum::Json(list))
 }
 
