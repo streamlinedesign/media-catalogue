@@ -267,7 +267,8 @@ The window's reader takes all three kinds:
   each page shows small at once while the full one is drawn.
 
 `b` bookmarks the page (as many as you like, each with a name), `m` opens the marks: bookmarks,
-highlights and notes, with a copy of them all as Markdown. `r` rotates the screen for a
+highlights and notes, with a copy of them all as Markdown. `/` opens Search, which finds words
+in an EPUB or PDF and lists each place with the words around it. `r` rotates the screen for a
 foldable or a tablet held upright (through `xrandr` on X11, with the touchscreen and pen
 mapped to follow through `xinput`; elsewhere, or with "page only" in Settings, only the page
 turns). Turned, the bar has Turn back and Other way, `r` turns back, and the screen also
@@ -284,6 +285,7 @@ settings are kept in `~/.config/katalog/reader.json`.
     GET  /books/{id}/res?path=           a picture inside an EPUB
     GET  /books/{id}/page/{n}?w=&dark=1  a page of a PDF or comic, w pixels wide, pages from 0
     GET  /api/books/{id}/page/{n}/words  the words on a PDF page with their boxes (0..1)
+    GET  /api/books/{id}/search?q=       the places in an EPUB or PDF where q is (at most 300)
     PUT  /api/books/{id}/position        {"page":n,"block":n,"progress":0.4}
     POST /api/books/{id}/bookmarks       {"page":n,"block":n,"label":""}, a second time takes it off
     PUT  /api/bookmarks/{id}             {"label":"..."};  DELETE /api/bookmarks/{id}

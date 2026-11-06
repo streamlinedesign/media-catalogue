@@ -14,6 +14,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 - A channel key while a film plays tunes the channel again (it was
   ignored), and a channel item that simply ends within seconds is no
   longer taken for one that failed to start.
+- Search inside a book: a Search tab beside Contents and Marks (or `/`)
+  finds words in an EPUB or a PDF, ignoring case, and lists each place
+  with the words around it; a click goes there. katalogd answers
+  `GET /api/books/{id}/search?q=`.
+- Page turn buttons: a ← and a → at the two ends of the reader's foot,
+  for books, PDFs and comics, wide enough for a finger.
 - Touch turns the page. Taps are now read from the window itself rather
   than by the page, which never saw them; a tap on the right half of a
   comic or PDF goes on, the left half back, and a drag still scrolls.

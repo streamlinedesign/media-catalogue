@@ -434,6 +434,7 @@ impl App {
                     Some(("show", id)) => id.parse().ok().map(Message::OpenShow),
                     Some(("watch", id)) => id.parse().ok().map(|id| Message::Watch(false, id)),
                     Some(("book", id)) => id.parse().ok().map(|id| Message::Read(reader::Msg::Open(id))),
+                    Some(("find", q)) => Some(Message::Read(reader::Msg::Find(q.to_string()))),
                     _ => match part {
                         "playlists" => Some(Message::Settings(SettingsPage::Music)),
                         "home" | "music" => Some(Message::Tab(Tab::Music)),
@@ -486,7 +487,7 @@ impl App {
                 };
                 if let Some(m) = msg {
                     // Steps after a book opens wait for it to load.
-                    if matches!(part, "next" | "marks") {
+                    if matches!(part, "next" | "marks") || part.starts_with("find:") {
                         let wait = 2500 + 300 * step as u64;
                         tasks.push(Task::perform(
                             async move {

@@ -20,11 +20,13 @@
 
 ## Later
 
-- Reader: search inside a book; EPUB footnotes as pop-ups
+- Reader: EPUB footnotes as pop-ups; mark the found words on a PDF page
 
 ## Done
 
-- 0.14.3: where you left off for films and shows
+- 0.15.1: where you left off for films and shows
+- 0.15.0: search inside a book
+- 0.14.3: page turn buttons in the reader
 - 0.14.2: touch turns the page
 - 0.14.1: rotate turns back, tap halves turn pages, arrows scroll, big RAR comics load fast
 - 0.14.0: books and comics, and a reader with highlights, notes, bookmarks, dark PDFs and rotate
