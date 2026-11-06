@@ -65,13 +65,7 @@ pub fn router(state: Shared) -> Router {
         .route("/", get(root))
         .route("/api/status", get(status))
         .route("/api/artists", get(artists))
-        .route("/api/albums", get(albums))
-        .route("/api/albums/{id}", get(album))
         .route("/api/albums/{id}/picks", get(album_picks))
-        .route("/api/movies", get(movies))
-        .route("/api/movies/{id}", get(movie))
-        .route("/api/shows", get(shows))
-        .route("/api/shows/{id}", get(show))
         .route("/api/channels", get(channels))
         .route("/api/channels/{n}/watch", get(watch_channel))
         .route("/api/movies/{id}/watch", get(watch_movie))
@@ -83,8 +77,6 @@ pub fn router(state: Shared) -> Router {
             axum::routing::put(put_progress).delete(delete_progress),
         )
         .route("/api/left-off", get(left_off))
-        .route("/video/{kind}/{id}", get(video_file))
-        .route("/video/{kind}/{id}/sub/{n}", get(video_sub))
         .route("/api/tracks", get(tracks))
         .route("/api/tracks/{id}", get(track))
         .route(
@@ -93,10 +85,10 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/api/tracks/{id}/lyrics/search", get(search_lyrics))
         .route("/api/tracks/{id}/playlists", get(track_playlists))
-        .route("/api/playlists", get(playlists).post(create_playlist))
+        .route("/api/playlists", post(create_playlist))
         .route(
             "/api/playlists/{id}",
-            get(playlist).put(rename_playlist).delete(delete_playlist),
+            axum::routing::put(rename_playlist).delete(delete_playlist),
         )
         .route("/api/playlists/{id}/tracks", post(playlist_add))
         .route(
@@ -108,8 +100,6 @@ pub fn router(state: Shared) -> Router {
         .route("/stations/{name}", get(station_stream))
         .route("/api/scan", post(scan))
         .route("/api/fetch", post(fetch))
-        .route("/art/{id}", get(art))
-        .route("/stream/{id}", get(stream))
         .route("/api/player", get(player_status))
         .route("/api/player/devices", get(player_devices))
         .route("/api/player/levels", get(player_levels))
@@ -129,13 +119,34 @@ pub fn router(state: Shared) -> Router {
         .route("/api/player/volume", post(player_volume))
         .route("/api/player/jump", post(player_jump))
         .merge(crate::read::routes())
+        .merge(library())
         .layer(cors)
         .with_state(state)
 }
 
+/// The read-only part of the library: lists, covers and the files
+/// themselves. The local API has all of it, and the phone page serves the
+/// same routes behind its password.
+pub fn library() -> Router<Shared> {
+    Router::new()
+        .route("/api/albums", get(albums))
+        .route("/api/albums/{id}", get(album))
+        .route("/api/playlists", get(playlists))
+        .route("/api/playlists/{id}", get(playlist))
+        .route("/api/movies", get(movies))
+        .route("/api/movies/{id}", get(movie))
+        .route("/api/shows", get(shows))
+        .route("/api/shows/{id}", get(show))
+        .route("/video/{kind}/{id}", get(video_file))
+        .route("/video/{kind}/{id}/sub/{n}", get(video_sub))
+        .route("/art/{id}", get(art))
+        .route("/stream/{id}", get(stream))
+        .merge(crate::read::library())
+}
+
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
-pub struct ApiError(StatusCode, String);
+pub struct ApiError(pub StatusCode, pub String);
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
@@ -147,7 +158,7 @@ impl IntoResponse for ApiError {
         (self.0, Json(serde_json::json!({ "error": self.1 }))).into_response()
     }
 }
-fn not_found(what: &str) -> ApiError {
+pub(crate) fn not_found(what: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, format!("{what} not found"))
 }
 
@@ -393,7 +404,7 @@ fn mpv_args(w: &video::Watch) -> Vec<String> {
     a
 }
 
-async fn video_path(s: &Shared, kind: &str, id: i64) -> Result<String, ApiError> {
+pub(crate) async fn video_path(s: &Shared, kind: &str, id: i64) -> Result<String, ApiError> {
     let conn = s.db.lock();
     let t = match kind {
         "movie" => video::watch_target(&conn, None, Some(id))?,

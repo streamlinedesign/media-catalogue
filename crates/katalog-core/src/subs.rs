@@ -233,7 +233,7 @@ pub fn moviehash(path: &Path) -> Option<String> {
 
 /// Subtitle files are often not UTF-8 but the old Windows code page of
 /// their language (1250 for Croatian, say): read them in that.
-fn decode_text(bytes: &[u8], lang: &str) -> String {
+pub fn decode_text(bytes: &[u8], lang: &str) -> String {
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     if let Ok(s) = std::str::from_utf8(bytes) {
         return s.to_string();

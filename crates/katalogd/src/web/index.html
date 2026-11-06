@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Katalog</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@800&display=swap">
+<style>
+  :root {
+    --paper: #fffabd; --ink: #050505;
+    --bg: var(--paper); --fg: var(--ink);
+    --mute: color-mix(in srgb, var(--fg) 62%, var(--bg));
+    --line: color-mix(in srgb, var(--fg) 22%, var(--bg));
+    --tint: color-mix(in srgb, var(--fg) 8%, var(--bg));
+    --head: "Schibsted Grotesk", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: var(--ink); --fg: var(--paper); --head: var(--mono); }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--mono);
+    padding-bottom: 140px; }
+  a { color: inherit; }
+  :focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg);
+    border-bottom: 2px solid var(--fg); padding: 12px 16px 0; }
+  .top { display: flex; align-items: baseline; gap: 12px; justify-content: space-between; }
+  h1 { font: 800 30px/1 var(--head); letter-spacing: -0.03em; margin: 0; }
+  @media (prefers-color-scheme: dark) { h1 { font-weight: 500; letter-spacing: 0; font-size: 24px; } }
+  .out { background: none; border: 0; padding: 4px; color: var(--mute); text-decoration: underline; }
+  nav { display: flex; gap: 0; overflow-x: auto; margin: 10px -16px 0; padding: 0 16px; scrollbar-width: none; }
+  nav a { padding: 8px 10px 10px; text-decoration: none; white-space: nowrap; border-bottom: 3px solid transparent; }
+  nav a[aria-current="page"] { border-color: var(--fg); font-weight: 500; }
+  .search { display: block; width: 100%; margin: 0 0 12px; padding: 10px 12px; background: transparent;
+    border: 2px solid var(--fg); border-radius: 0; }
+
+  main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+  h2 { font: 800 26px/1.05 var(--head); letter-spacing: -0.02em; margin: 0 0 4px; overflow-wrap: anywhere; }
+  @media (prefers-color-scheme: dark) { h2 { font-weight: 500; letter-spacing: 0; font-size: 21px; } }
+  .meta { color: var(--mute); margin: 0 0 12px; }
+  .note { padding: 10px 12px; border: 2px solid var(--fg); margin: 12px 0; }
+  .back { display: inline-block; margin: 0 0 12px; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
+  .card { display: block; text-decoration: none; padding: 0 0 6px; }
+  .card img, .card .blank { width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+    background: var(--tint); border: 2px solid var(--fg); }
+  .poster img, .poster .blank { aspect-ratio: 2 / 3; }
+  .card b { display: block; font-weight: 500; margin-top: 6px; overflow-wrap: anywhere; }
+  .card span { color: var(--mute); font-size: 12px; }
+  @media (prefers-color-scheme: dark) {
+    .card { border: 1px solid var(--fg); padding: 6px; }
+    .card img, .card .blank { border-width: 1px; }
+    .card:hover, .card:focus-visible { background: var(--fg); color: var(--bg); }
+    .card:hover span, .card:focus-visible span { color: var(--bg); }
+  }
+
+  .head { display: grid; grid-template-columns: 120px 1fr; gap: 14px; align-items: end; margin-bottom: 14px; }
+  .head img, .head .blank { width: 120px; aspect-ratio: 1; object-fit: cover; border: 2px solid var(--fg); background: var(--tint); display: block; }
+  .head.poster img, .head.poster .blank { aspect-ratio: 2 / 3; }
+  @media (min-width: 640px) { .head { grid-template-columns: 200px 1fr; } .head img, .head .blank { width: 200px; } }
+
+  .keys { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+  .key { display: inline-block; padding: 9px 14px; border: 2px solid var(--fg); background: var(--fg);
+    color: var(--bg); text-decoration: none; border-radius: 0; }
+  .key.ghost { background: transparent; color: var(--fg); }
+  @media (prefers-color-scheme: dark) {
+    .key { background: transparent; color: var(--fg); border-width: 1px; }
+    .key:hover, .key:focus-visible { background: var(--fg); color: var(--bg); }
+  }
+
+  ol.rows, ul.rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .rows li { border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 6px; }
+  .rows button.row, .rows a.row { flex: 1; min-width: 0; display: grid; grid-template-columns: 2.4em 1fr auto;
+    gap: 8px; align-items: baseline; text-align: left; padding: 11px 4px; background: none; border: 0; text-decoration: none; }
+  .rows .row .t { overflow-wrap: anywhere; }
+  .rows .row .n, .rows .row .d { color: var(--mute); font-size: 12px; }
+  .rows li.on { background: var(--tint); font-weight: 500; }
+  .rows .side { padding: 8px; font-size: 12px; white-space: nowrap; }
+  .rows .side a { margin-left: 6px; }
+  .season { font: 500 14px/1 var(--mono); margin: 20px 0 8px; }
+
+  video { width: 100%; max-height: 70vh; background: #050505; display: block; margin: 0 0 10px; }
+  .overview { max-width: 64ch; }
+  .more { margin: 16px 0; }
+
+  #player { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; background: var(--bg);
+    border-top: 2px solid var(--fg); padding: 8px 16px calc(8px + env(safe-area-inset-bottom)); }
+  #player[hidden] { display: none; }
+  .now { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: center; }
+  .now img, .now .blank { width: 48px; height: 48px; object-fit: cover; border: 2px solid var(--fg); background: var(--tint); display: block; }
+  .now .what { min-width: 0; }
+  .now .what b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now .what span { display: block; color: var(--mute); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctl { display: flex; gap: 4px; }
+  .ctl button { width: 44px; height: 44px; border: 2px solid var(--fg); background: transparent; padding: 0; border-radius: 0; }
+  .ctl button.play { background: var(--fg); color: var(--bg); }
+  @media (prefers-color-scheme: dark) { .ctl button, .now img, .now .blank { border-width: 1px; } .ctl button.play { background: transparent; color: var(--fg); } }
+  .bar { display: grid; grid-template-columns: 3.4em 1fr 3.4em; gap: 8px; align-items: center; font-size: 12px; color: var(--mute); margin-top: 6px; }
+  .bar span:last-child { text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--fg); margin: 0; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1>Katalog</h1>
+    <form method="post" action="/logout"><button class="out" type="submit">Sign out</button></form>
+  </div>
+  <nav aria-label="Library">
+    <a href="#music">Music</a>
+    <a href="#playlists">Playlists</a>
+    <a href="#films">Films</a>
+    <a href="#shows">Shows</a>
+    <a href="#books">Books</a>
+  </nav>
+</header>
+<main id="view" tabindex="-1"></main>
+
+<section id="player" hidden aria-label="Now playing">
+  <div class="now">
+    <span id="np-art" class="blank"></span>
+    <div class="what"><b id="np-title"></b><span id="np-sub"></span></div>
+    <div class="ctl">
+      <button id="prev" type="button" aria-label="Previous">&#9664;&#9664;</button>
+      <button id="play" class="play" type="button" aria-label="Pause">&#10074;&#10074;</button>
+      <button id="next" type="button" aria-label="Next">&#9654;&#9654;</button>
+    </div>
+  </div>
+  <div class="bar">
+    <span id="np-at">0:00</span>
+    <label class="sr" for="np-seek">Position</label>
+    <input id="np-seek" type="range" min="0" max="1000" value="0" step="1">
+    <span id="np-len">0:00</span>
+  </div>
+</section>
+<audio id="audio" preload="auto"></audio>
+
+<script>
+"use strict";
+const T = "__TOKEN__";
+const view = document.getElementById("view");
+const audio = document.getElementById("audio");
+const cache = {};
+const PAGE = 120;
+
+// ---- helpers ---------------------------------------------------------------
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "on") for (const [ev, f] of Object.entries(v)) e.addEventListener(ev, f);
+    else if (k === "class") e.className = v;
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
+  return e;
+}
+async function api(path) {
+  const r = await fetch(path, { credentials: "same-origin" });
+  if (r.status === 401) { location.reload(); throw new Error("signed out"); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
+}
+async function cached(path) { return cache[path] ??= api(path).catch(e => { delete cache[path]; throw e; }); }
+function time(ms) {
+  if (!ms || ms < 0) return "0:00";
+  const s = Math.round(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
+}
+function minutes(ms) { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`; }
+function img(id, size, crop) {
+  if (!id) return el("span", { class: "blank", "aria-hidden": "true" });
+  return el("img", { src: `/art/${id}?size=${size}${crop ? "&crop=1" : ""}`, alt: "", loading: "lazy", decoding: "async" });
+}
+function abs(path) { return `${location.origin}${path}${path.includes("?") ? "&" : "?"}t=${T}`; }
+function vlc(path) { return "vlc://" + abs(path); }
+function matches(q, ...fields) {
+  if (!q) return true;
+  const hay = fields.filter(Boolean).join(" ").toLowerCase();
+  return q.toLowerCase().split(/\s+/).every(w => hay.includes(w));
+}
+function searchBox(label, value, onInput) {
+  const i = el("input", { class: "search", type: "search", placeholder: label, "aria-label": label, value: value || "" });
+  i.addEventListener("input", () => onInput(i.value));
+  return i;
+}
+function paged(items, make) {
+  let shown = 0;
+  const box = el("div", { class: "grid" });
+  const more = el("button", { class: "key ghost more", type: "button" }, "Show more");
+  const step = () => {
+    for (const it of items.slice(shown, shown + PAGE)) box.append(make(it));
+    shown += PAGE;
+    more.hidden = shown >= items.length;
+  };
+  more.addEventListener("click", step);
+  step();
+  return [box, more];
+}
+function failed(e) { view.replaceChildren(el("p", { class: "note" }, `Could not load this: ${e.message}`)); }
+function head(art, title, sub, poster) {
+  return el("div", { class: "head" + (poster ? " poster" : "") }, art, el("div", {}, el("h2", {}, title), sub ? el("p", { class: "meta" }, sub) : null));
+}
+
+// ---- music -----------------------------------------------------------------
+let musicQ = "";
+async function music() {
+  const albums = await cached("/api/albums");
+  const list = el("div");
+  const draw = () => {
+    const hits = albums.filter(a => matches(musicQ, a.title, a.artist, a.year));
+    list.replaceChildren(...paged(hits, a => el("a", { class: "card", href: `#album/${a.id}` },
+      img(a.art_id, 256, true), el("b", {}, a.title), el("span", {}, [a.artist, a.year].filter(Boolean).join(" · ")))));
+    if (!hits.length) list.replaceChildren(el("p", { class: "meta" }, "No albums match."));
+  };
+  view.replaceChildren(searchBox("Search albums and artists", musicQ, q => { musicQ = q; draw(); }), list);
+  draw();
+}
+
+function trackRows(tracks, numbered) {
+  const ol = el("ol", { class: "rows" });
+  tracks.forEach((t, i) => {
+    const li = el("li", { "data-track": t.id },
+      el("button", { class: "row", type: "button", on: { click: () => playList(tracks, i) } },
+        el("span", { class: "n" }, numbered ? (t.number ?? i + 1) : i + 1),
+        el("span", { class: "t" }, t.title, numbered ? null : el("span", { class: "d" }, ` · ${t.artist}`)),
+        el("span", { class: "d" }, time(t.duration_ms))));
+    ol.append(li);
+  });
+  markPlaying(ol);
+  return ol;
+}
+
+async function album(id) {
+  const a = await cached(`/api/albums/${id}`);
+  view.replaceChildren(
+    el("a", { class: "back", href: "#music" }, "Back to music"),
+    head(img(a.art_id, 512, true), a.title, [a.artist, a.year, `${a.track_count} songs`, minutes(a.duration_ms)].filter(Boolean).join(" · ")),
+    el("div", { class: "keys" },
+      el("button", { class: "key", type: "button", on: { click: () => playList(a.tracks, 0) } }, "Play"),
+      el("button", { class: "key ghost", type: "button", on: { click: () => playList(shuffle(a.tracks), 0) } }, "Shuffle")),
+    trackRows(a.tracks, true));
+}
+
+async function playlists() {
+  const lists = await cached("/api/playlists");
+  const ul = el("ul", { class: "rows" });
+  for (const p of lists) {
+    const meta = [p.genre ? "genre" : null, `${p.track_count} songs`, minutes(p.duration_ms)].filter(Boolean).join(" · ");
+    ul.append(el("li", {}, el("a", { class: "row", href: `#playlist/${p.id}` },
+      el("span", { class: "n" }, "·"), el("span", { class: "t" }, p.name), el("span", { class: "d" }, meta))));
+  }
+  view.replaceChildren(lists.length ? ul : el("p", { class: "meta" }, "No playlists yet."));
+}
+
+async function playlist(id) {
+  const p = await cached(`/api/playlists/${id}`);
+  view.replaceChildren(
+    el("a", { class: "back", href: "#playlists" }, "Back to playlists"),
+    el("h2", {}, p.name),
+    el("p", { class: "meta" }, `${p.track_count} songs · ${minutes(p.duration_ms)}`),
+    el("div", { class: "keys" },
+      el("button", { class: "key", type: "button", on: { click: () => playList(p.tracks, 0) } }, "Play"),
+      el("button", { class: "key ghost", type: "button", on: { click: () => playList(shuffle(p.tracks), 0) } }, "Shuffle")),
+    trackRows(p.tracks, false));
+}
+
+function shuffle(xs) {
+  const a = xs.slice();
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+// ---- the player ------------------------------------------------------------
+const P = { queue: [], at: -1, skips: 0 };
+const $ = id => document.getElementById(id);
+function playList(tracks, i) { P.queue = tracks.slice(); P.skips = 0; start(i); }
+function start(i) {
+  if (i < 0 || i >= P.queue.length) return;
+  P.at = i;
+  const t = P.queue[i];
+  stopVideos();
+  audio.src = `/stream/${t.id}`;
+  audio.play().catch(() => {});
+  $("player").hidden = false;
+  $("np-title").textContent = t.title;
+  $("np-sub").textContent = [t.artist, t.album].filter(Boolean).join(" · ");
+  $("np-art").replaceWith(Object.assign(img(t.art_id, 128, true), { id: "np-art" }));
+  $("np-len").textContent = time(t.duration_ms);
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title, artist: t.artist, album: t.album,
+      artwork: t.art_id ? [{ src: `/art/${t.art_id}?size=512&crop=1`, sizes: "512x512", type: "image/jpeg" }] : [],
+    });
+  }
+  markPlaying(document);
+}
+function markPlaying(root) {
+  const id = P.queue[P.at]?.id;
+  root.querySelectorAll("[data-track]").forEach(li => li.classList.toggle("on", Number(li.dataset.track) === id));
+}
+function playPause() { if (!audio.src) return; audio.paused ? audio.play() : audio.pause(); }
+function next() { if (P.at + 1 < P.queue.length) start(P.at + 1); }
+function prev() { audio.currentTime > 3 ? (audio.currentTime = 0) : start(Math.max(0, P.at - 1)); }
+$("play").addEventListener("click", playPause);
+$("next").addEventListener("click", next);
+$("prev").addEventListener("click", prev);
+audio.addEventListener("ended", () => { P.skips = 0; next(); });
+audio.addEventListener("error", () => {
+  // A file this browser cannot decode: go on to the next, but not forever.
+  if (!audio.src || ++P.skips > 5) return;
+  $("np-sub").textContent = "This file does not play in the browser";
+  setTimeout(next, 1200);
+});
+audio.addEventListener("playing", () => { P.skips = 0; });
+const playIcon = () => {
+  const paused = audio.paused;
+  $("play").innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
+  $("play").setAttribute("aria-label", paused ? "Play" : "Pause");
+  if ("mediaSession" in navigator) navigator.mediaSession.playbackState = paused ? "paused" : "playing";
+};
+audio.addEventListener("play", playIcon);
+audio.addEventListener("pause", playIcon);
+let dragging = false;
+const seek = $("np-seek");
+seek.addEventListener("input", () => { dragging = true; $("np-at").textContent = time(seek.value / 1000 * (audio.duration || 0) * 1000); });
+seek.addEventListener("change", () => { dragging = false; if (audio.duration) audio.currentTime = seek.value / 1000 * audio.duration; });
+audio.addEventListener("timeupdate", () => {
+  if (dragging || !audio.duration) return;
+  seek.value = Math.round(audio.currentTime / audio.duration * 1000);
+  $("np-at").textContent = time(audio.currentTime * 1000);
+  $("np-len").textContent = time(audio.duration * 1000);
+});
+if ("mediaSession" in navigator) {
+  const ms = navigator.mediaSession;
+  ms.setActionHandler("play", () => audio.play());
+  ms.setActionHandler("pause", () => audio.pause());
+  ms.setActionHandler("nexttrack", next);
+  ms.setActionHandler("previoustrack", prev);
+  try { ms.setActionHandler("seekto", d => { audio.currentTime = d.seekTime; }); } catch (_) {}
+}
+function stopVideos() { document.querySelectorAll("video").forEach(v => v.pause()); }
+
+// ---- films and shows -------------------------------------------------------
+let filmQ = "", showQ = "";
+async function films() {
+  const all = await cached("/api/movies");
+  const list = el("div");
+  const draw = () => {
+    const hits = all.filter(m => matches(filmQ, m.title, m.year, (m.genres || []).join(" ")));
+    list.replaceChildren(...paged(hits, m => el("a", { class: "card poster", href: `#film/${m.id}` },
+      img(m.poster_id, 342), el("b", {}, m.title), el("span", {}, [m.year, m.duration_ms ? minutes(m.duration_ms) : null].filter(Boolean).join(" · ")))));
+    if (!hits.length) list.replaceChildren(el("p", { class: "meta" }, all.length ? "No films match." : "No films yet."));
+  };
+  view.replaceChildren(searchBox("Search films", filmQ, q => { filmQ = q; draw(); }), list);
+  draw();
+}
+
+/// A video player when the browser can play the file, and always a way out:
+/// download it, or hand it to VLC.
+async function watchBox(kind, id) {
+  const src = `/video/${kind}/${id}`;
+  const box = el("div");
+  const v = el("video", { controls: true, preload: "metadata", playsinline: true, src });
+  const note = el("p", { class: "note", hidden: true }, "This file does not play in the browser. Download it, or open it in VLC.");
+  v.addEventListener("play", () => audio.pause());
+  v.addEventListener("error", () => { v.hidden = true; note.hidden = false; });
+  try {
+    for (const s of await api(`/web/subs/${kind}/${id}`)) {
+      v.append(el("track", { kind: "subtitles", src: `/web/sub/${kind}/${id}/${s.n}`, srclang: s.lang === "?" ? null : s.lang, label: s.lang === "?" ? "Subtitles" : s.lang }));
+    }
+  } catch (_) {}
+  box.append(v, note, el("div", { class: "keys" },
+    el("a", { class: "key", href: src, download: true }, "Download"),
+    el("a", { class: "key ghost", href: vlc(src) }, "Open in VLC")));
+  return box;
+}
+
+async function film(id) {
+  const m = await cached(`/api/movies/${id}`);
+  view.replaceChildren(
+    el("a", { class: "back", href: "#films" }, "Back to films"),
+    head(img(m.poster_id, 342), m.title, [m.year, m.duration_ms ? minutes(m.duration_ms) : null, (m.genres || []).join(", ") || null].filter(Boolean).join(" · "), true),
+    await watchBox("movie", m.id),
+    ...(m.overview ? [el("p", { class: "overview" }, m.overview)] : []));
+}
+
+async function shows() {
+  const all = await cached("/api/shows");
+  const list = el("div");
+  const draw = () => {
+    const hits = all.filter(s => matches(showQ, s.title, s.year, (s.genres || []).join(" ")));
+    list.replaceChildren(...paged(hits, s => el("a", { class: "card poster", href: `#show/${s.id}` },
+      img(s.poster_id, 342), el("b", {}, s.title),
+      el("span", {}, [s.year, `${s.episode_count} episodes`].filter(Boolean).join(" · ")))));
+    if (!hits.length) list.replaceChildren(el("p", { class: "meta" }, all.length ? "No shows match." : "No shows yet."));
+  };
+  view.replaceChildren(searchBox("Search shows", showQ, q => { showQ = q; draw(); }), list);
+  draw();
+}
+
+async function show(id, ep) {
+  const s = await cached(`/api/shows/${id}`);
+  const parts = [
+    el("a", { class: "back", href: "#shows" }, "Back to shows"),
+    head(img(s.poster_id, 342), s.title, [s.year, s.seasons === 1 ? "1 season" : `${s.seasons} seasons`, `${s.episode_count} episodes`].filter(Boolean).join(" · "), true),
+  ];
+  const playing = ep ? s.episodes.find(e => e.id === ep) : null;
+  if (playing) {
+    parts.push(el("h3", { class: "season" }, `Season ${playing.season}, episode ${playing.episode}${playing.title ? ": " + playing.title : ""}`));
+    parts.push(await watchBox("episode", playing.id));
+  } else if (s.overview) {
+    parts.push(el("p", { class: "overview" }, s.overview));
+  }
+  let season = null, ol = null;
+  for (const e of s.episodes) {
+    if (e.season !== season) {
+      season = e.season;
+      ol = el("ol", { class: "rows" });
+      parts.push(el("h3", { class: "season" }, season === 0 ? "Specials" : `Season ${season}`), ol);
+    }
+    ol.append(el("li", { class: e.id === ep ? "on" : null },
+      el("a", { class: "row", href: `#show/${s.id}/${e.id}` },
+        el("span", { class: "n" }, e.episode), el("span", { class: "t" }, e.title || `Episode ${e.episode}`),
+        el("span", { class: "d" }, e.duration_ms ? minutes(e.duration_ms) : "")),
+      el("span", { class: "side" }, el("a", { href: `/video/episode/${e.id}`, download: true, "aria-label": `Download episode ${e.episode}` }, "Download"))));
+  }
+  view.replaceChildren(...parts);
+  if (playing) window.scrollTo(0, 0);
+}
+
+// ---- books -----------------------------------------------------------------
+let bookQ = "";
+async function books() {
+  const all = await cached("/api/books");
+  const list = el("div");
+  const draw = () => {
+    const hits = all.filter(b => matches(bookQ, b.title, b.author, b.series, b.kind, b.format));
+    list.replaceChildren(...paged(hits, b => el("a", { class: "card poster", href: `/books/${b.id}/file`, download: true, title: `Download ${b.title}` },
+      img(b.cover_id, 342), el("b", {}, b.title),
+      el("span", {}, [b.author, b.kind === "comic" ? "comic" : null, (b.format || "").toLowerCase()].filter(Boolean).join(" · ")))));
+    if (!hits.length) list.replaceChildren(el("p", { class: "meta" }, all.length ? "No books match." : "No books yet."));
+  };
+  view.replaceChildren(searchBox("Search books and comics", bookQ, q => { bookQ = q; draw(); }), list);
+  draw();
+}
+
+// ---- routes ----------------------------------------------------------------
+const routes = [
+  [/^#?(music)?$/, () => music(), "music"],
+  [/^#album\/(\d+)$/, m => album(m[1]), "music"],
+  [/^#playlists$/, () => playlists(), "playlists"],
+  [/^#playlist\/(\d+)$/, m => playlist(m[1]), "playlists"],
+  [/^#films$/, () => films(), "films"],
+  [/^#film\/(\d+)$/, m => film(m[1]), "films"],
+  [/^#shows$/, () => shows(), "shows"],
+  [/^#show\/(\d+)(?:\/(\d+))?$/, m => show(Number(m[1]), m[2] ? Number(m[2]) : null), "shows"],
+  [/^#books$/, () => books(), "books"],
+];
+let lastTab = null;
+async function route() {
+  const h = location.hash;
+  for (const [re, f, tab] of routes) {
+    const m = h.match(re);
+    if (!m) continue;
+    document.querySelectorAll("nav a").forEach(a => {
+      if (a.getAttribute("href") === `#${tab}`) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+    stopVideos();
+    try { await f(m); } catch (e) { failed(e); }
+    if (lastTab !== null) view.focus({ preventScroll: true });
+    if (!/\/\d+\/\d+$/.test(h)) window.scrollTo(0, 0);
+    lastTab = tab;
+    return;
+  }
+  location.hash = "#music";
+}
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

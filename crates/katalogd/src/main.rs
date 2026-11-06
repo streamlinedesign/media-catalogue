@@ -14,6 +14,7 @@ mod onair;
 mod player;
 mod read;
 mod watch;
+mod web;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -82,6 +83,16 @@ pub struct Args {
     /// Languages to look for subtitles in, comma separated (ISO 639-1).
     #[arg(long, env = "KATALOG_SUB_LANGS", default_value = "en")]
     sub_langs: String,
+
+    /// Address for the phone page: music, films, shows and book downloads in
+    /// a browser, behind KATALOG_WEB_PASSWORD. 0.0.0.0:4180 reaches the Wi-Fi.
+    /// Off when not given.
+    #[arg(long, env = "KATALOG_WEB")]
+    web: Option<SocketAddr>,
+
+    /// The password for the phone page. The page stays off without one.
+    #[arg(long, env = "KATALOG_WEB_PASSWORD", hide_env_values = true)]
+    web_password: Option<String>,
 }
 
 fn home() -> PathBuf {
@@ -220,6 +231,32 @@ async fn main() -> Result<()> {
             }
         }
     };
+
+    let page = match (args.web, args.web_password.as_deref().map(str::trim)) {
+        (None, _) => None,
+        (Some(addr), None | Some("")) => {
+            error!("--web {addr} needs KATALOG_WEB_PASSWORD; the phone page is off");
+            None
+        }
+        (Some(addr), Some(pw)) => match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => {
+                let w = web::Web::new(&state, pw.to_string())?;
+                info!("phone page on {}", web::lan_url(addr));
+                Some((l, web::router(state.clone(), w)))
+            }
+            Err(e) => {
+                error!("could not bind the phone page on {addr}: {e}");
+                None
+            }
+        },
+    };
+    if let Some((l, r)) = page {
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(l, r).with_graceful_shutdown(shutdown()).await {
+                error!("phone page: {e}");
+            }
+        });
+    }
 
     let tcp_server = axum::serve(tcp, app.clone()).with_graceful_shutdown(shutdown());
     match unix {

@@ -3,11 +3,13 @@ SHELL := bash
 
 # ---- Project ----------------------------------------------------------------
 # media-catalogue: katalogd, the katalog CLI and katalog-window (crates/).
-# Ports from PORTS.md in streamlinedesign/template; .env overrides. PORT is
-# where `make dev` runs katalogd; the installed service keeps its own --bind
-# (KATALOG_BIND, 127.0.0.1:7300).
+# Ports from PORTS.md in streamlinedesign/template; .env overrides. In
+# `make dev`, PORT is the phone page (all interfaces, behind
+# KATALOG_WEB_PASSWORD) and WEB_PORT the local API. The installed service
+# keeps its own KATALOG_BIND (127.0.0.1:7300) and KATALOG_WEB.
 NAME     ?= katalog
 PORT     ?= 4180
+WEB_PORT ?= 4181
 DROPLET  ?=
 # -----------------------------------------------------------------------------
 
@@ -19,9 +21,10 @@ VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
-dev: ## katalogd from source on 127.0.0.1:PORT (4180), beside the installed service
-	@echo "katalogd on http://127.0.0.1:$(PORT)"
-	cargo run -p katalogd -- --bind 127.0.0.1:$(PORT) $(ARGS)
+dev: ## katalogd from source: the phone page on 0.0.0.0:PORT (4180), the API on 127.0.0.1:WEB_PORT
+	@test -n "$(KATALOG_WEB_PASSWORD)" || { echo "set KATALOG_WEB_PASSWORD in .env for the phone page"; exit 1; }
+	@echo "On your phone: http://$$(hostname -I 2>/dev/null | cut -d' ' -f1):$(PORT)"
+	cargo run -p katalogd -- --bind 127.0.0.1:$(WEB_PORT) --web 0.0.0.0:$(PORT) --socket '' $(ARGS)
 
 daemon: ## Run katalogd from source (scans ~/Library/Music, serves 127.0.0.1:7300)
 	cargo run -p katalogd -- $(ARGS)
@@ -30,7 +33,7 @@ install: build ## Put katalogd, katalog and katalog-window in ~/.local/bin and r
 	@mkdir -p $(HOME)/.local/bin $(HOME)/.config/systemd/user $(HOME)/.config/katalog
 	install -m 755 target/release/katalogd target/release/katalog target/release/katalog-window $(HOME)/.local/bin/
 	install -m 644 deploy/katalogd.service $(HOME)/.config/systemd/user/katalogd.service
-	@test -f $(HOME)/.config/katalog/env || printf '# KATALOG_LIBRARY=$(HOME)/Library\n# KATALOG_DEVICE=auto\n# KATALOG_BIND=127.0.0.1:7300\n' > $(HOME)/.config/katalog/env
+	@test -f $(HOME)/.config/katalog/env || printf '# KATALOG_LIBRARY=$(HOME)/Library\n# KATALOG_DEVICE=auto\n# KATALOG_BIND=127.0.0.1:7300\n# The phone page on the Wi-Fi, off until both are set:\n# KATALOG_WEB=0.0.0.0:4180\n# KATALOG_WEB_PASSWORD=\n' >$(HOME)/.config/katalog/env
 	systemctl --user daemon-reload
 	systemctl --user enable --now katalogd
 	systemctl --user restart katalogd

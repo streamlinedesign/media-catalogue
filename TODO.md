@@ -2,11 +2,11 @@
 
 ## Now
 
-- A page in katalogd for the phone on the Wi-Fi: music, films, shows, book downloads, behind a password
 - Delete the merged branches `comics-blue`, `fetch-command`, `katalogd`, `lyrics-matching`, `playback`
 
 ## Next
 
+- Phone page: where you left off for films, playing to the room speakers from the phone
 - Adopt the Streamline design system (design-system@v0.2.0) in the window in place of Satoshi, navy and cream
 - Tag a version so `release.yml` publishes the first binaries
 
@@ -23,6 +23,7 @@
 
 ## Done
 
+- 0.17.0: the phone page on the Wi-Fi
 - 0.16.1: the Go web catalogue removed; release.yml builds the Rust binaries
 - 0.15.1: where you left off for films and shows
 - 0.15.0: search inside a book
