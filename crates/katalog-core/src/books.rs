@@ -787,6 +787,119 @@ pub fn epub_chapter(path: &Path, index: usize) -> Result<(Chapter, Vec<Block>)> 
     Ok((ch.clone(), chapter_blocks(&raw, &ch.href)?))
 }
 
+/// A place in a book where the searched words are.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Hit {
+    /// The chapter (EPUB) or page (PDF), from 0.
+    pub page: i64,
+    /// The paragraph in an EPUB chapter; 0 for a PDF.
+    pub block: i64,
+    /// The words around it, with the match between `at` and `at + len`
+    /// (in characters).
+    pub snippet: String,
+    pub at: usize,
+    pub len: usize,
+}
+
+/// The most places a search gives back.
+pub const MAX_HITS: usize = 300;
+
+/// Finds `q` in a book, ignoring case: every paragraph of an EPUB, every
+/// page of a PDF (through pdftotext).
+pub fn search(path: &Path, format: &str, q: &str) -> Result<Vec<Hit>> {
+    let q = q.trim();
+    if q.chars().count() < 2 {
+        return Ok(vec![]);
+    }
+    let mut hits = vec![];
+    match format {
+        "epub" => {
+            let info = epub_info(path)?;
+            let mut z = zip_open(path)?;
+            for (ci, ch) in info.chapters.iter().enumerate() {
+                let Ok(raw) = zip_bytes(&mut z, &ch.href) else {
+                    continue;
+                };
+                let Ok(blocks) = chapter_blocks(&raw, &ch.href) else {
+                    continue;
+                };
+                for (bi, b) in blocks.iter().enumerate() {
+                    find_in(&b.text(), q, ci as i64, bi as i64, &mut hits);
+                    if hits.len() >= MAX_HITS {
+                        return Ok(hits);
+                    }
+                }
+            }
+        }
+        "pdf" => {
+            let out = Command::new("pdftotext")
+                .arg(path)
+                .arg("-")
+                .output()
+                .context("pdftotext is not installed (poppler-utils)")?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            for (pi, page) in text.split('\u{c}').enumerate() {
+                find_in(page, q, pi as i64, 0, &mut hits);
+                if hits.len() >= MAX_HITS {
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+    hits.truncate(MAX_HITS);
+    Ok(hits)
+}
+
+/// Every match of `q` in `text`, with a snippet of the words around it.
+fn find_in(text: &str, q: &str, page: i64, block: i64, hits: &mut Vec<Hit>) {
+    // Work in characters, lowercased one for one, so places line up.
+    let flat: Vec<char> = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect();
+    let low: Vec<char> = flat
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let needle: Vec<char> = q
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    if needle.is_empty() || needle.len() > low.len() {
+        return;
+    }
+    let mut i = 0;
+    while i + needle.len() <= low.len() {
+        if low[i..i + needle.len()] == needle[..] {
+            let from = i.saturating_sub(48);
+            let to = (i + needle.len() + 72).min(flat.len());
+            let lead = if from > 0 { "…" } else { "" };
+            let tail = if to < flat.len() { "…" } else { "" };
+            let snippet: String = lead
+                .chars()
+                .chain(flat[from..to].iter().copied())
+                .chain(tail.chars())
+                .collect();
+            hits.push(Hit {
+                page,
+                block,
+                snippet,
+                at: i - from + lead.chars().count(),
+                len: needle.len(),
+            });
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// A file inside an EPUB (a picture), with its type.
 pub fn epub_resource(path: &Path, name: &str) -> Result<(String, Vec<u8>)> {
     let mut z = zip_open(path)?;
@@ -1844,6 +1957,27 @@ pub fn highlights_markdown(conn: &Connection, book_id: i64) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_finds_every_place_with_its_words_around() {
+        let mut hits = vec![];
+        find_in(
+            "Alice  was beginning to get very TIRED\nof sitting; tired again",
+            "tired",
+            1,
+            4,
+            &mut hits,
+        );
+        assert_eq!(hits.len(), 2);
+        let h = &hits[0];
+        assert_eq!((h.page, h.block), (1, 4));
+        let found: String = h.snippet.chars().skip(h.at).take(h.len).collect();
+        assert_eq!(found, "TIRED");
+        assert!(h.snippet.starts_with("Alice was"));
+        let h = &hits[1];
+        let found: String = h.snippet.chars().skip(h.at).take(h.len).collect();
+        assert_eq!(found, "tired");
+    }
     use std::io::Write;
 
     fn tmp(tag: &str) -> PathBuf {

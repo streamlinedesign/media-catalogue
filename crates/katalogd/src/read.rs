@@ -13,6 +13,7 @@
 //!   POST /api/books/{id}/highlights      {"page":n,"anchor":{..},"text":"..","color":"ochre","note":""}
 //!   PUT  /api/highlights/{id}            {"color":"pink"} or {"note":"..."}   DELETE /api/highlights/{id}
 //!   GET  /api/books/{id}/highlights.md   every highlight and note as Markdown
+//!   GET  /api/books/{id}/search?q=       the places in an EPUB or PDF where q is
 
 use crate::Shared;
 use axum::extract::{Path, Query, State};
@@ -45,6 +46,7 @@ pub fn routes() -> Router<Shared> {
             put(update_highlight).delete(delete_highlight),
         )
         .route("/api/books/{id}/highlights.md", get(markdown))
+        .route("/api/books/{id}/search", get(search))
 }
 
 pub struct Error(StatusCode, String);
@@ -333,6 +335,24 @@ async fn page(
     let dark = q.dark == 1;
     let (mime, data) = tokio::task::spawn_blocking(move || render(&book, n, w, dark)).await??;
     Ok(bytes(&mime, data))
+}
+
+#[derive(Deserialize, Default)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+}
+
+async fn search(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    Query(p): Query<SearchQuery>,
+) -> R<Vec<books::Hit>> {
+    let book = get_book(&s, id)?;
+    let path = PathBuf::from(&book.path);
+    Ok(Json(
+        tokio::task::spawn_blocking(move || books::search(&path, &book.format, &p.q)).await??,
+    ))
 }
 
 async fn words(State(s): State<Shared>, Path((id, n)): Path<(i64, i64)>) -> R<Vec<Word>> {
