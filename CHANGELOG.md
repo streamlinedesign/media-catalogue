@@ -4,6 +4,10 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- The TV turns back on after TURN OFF, and the channel keys bring it back
+  too. Its sound now reaches you: asking for sound retries until mpv is
+  listening, AUDIO on a silent set turns sound on, and mpv plays on the
+  same card as katalogd. A lighter CRT.
 - Four pages instead of eight tabs. Music is the old Home without the
   television. Screen is a home for films and shows: the set big, its keys,
   a guide to the three channels, tonight's film and what is new.

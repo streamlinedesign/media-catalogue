@@ -126,6 +126,9 @@ pub struct Tv {
     /// Whether mpv has the sound card. Silent, it has no audio track at all,
     /// so the card stays free for the music.
     pub sound: bool,
+    /// The card katalogd plays to, when it runs on this machine: mpv uses
+    /// the same one, so the set and the music hand it to each other.
+    pub audio_device: Option<String>,
     pub full: bool,
     /// Where the set is on Screen, in logical pixels, when Screen is showing.
     pub area: Option<Rectangle>,
@@ -153,6 +156,7 @@ impl Default for Tv {
                 .map(|v| v != "0")
                 .unwrap_or_else(|_| !off_marker().exists()),
             sound: false,
+            audio_device: None,
             full: false,
             area: None,
             window: Size::new(1440.0, 900.0),
@@ -233,6 +237,7 @@ impl Tv {
     /// Starts mpv on these arguments (from katalogd), with sound or not.
     pub fn play(&mut self, args: &[String], on: On, sound: bool) -> Result<(), String> {
         self.stop();
+        self.sound = sound;
         let wid = self.ensure_embed();
         let mut cmd = Command::new("mpv");
         match wid {
@@ -251,7 +256,13 @@ impl Tv {
         cmd.arg(format!("--input-ipc-server={}", self.socket.display()))
             .arg("--keep-open=no")
             .arg("--idle=no")
-            .args(args)
+            .args(args);
+        if let Some(d) = &self.audio_device {
+            // Through plughw, so mpv need not match the card's own format.
+            let d = d.strip_prefix("hw:").map(|r| format!("plughw:{r}")).unwrap_or(d.clone());
+            cmd.arg(format!("--audio-device=alsa/{d}"));
+        }
+        cmd
             // After katalogd's arguments, so this wins.
             .arg(format!("--aid={}", if sound { "auto" } else { "no" }))
             .stdin(Stdio::null())
@@ -277,9 +288,18 @@ impl Tv {
     }
 
     /// Sends mpv a command over its socket, if it is listening.
+    /// Sends mpv a command over its socket. Just after a start mpv may not
+    /// be listening yet, so it is given a moment (a second at most).
     pub fn command(&self, cmd: serde_json::Value) {
-        if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&self.socket) {
-            let _ = writeln!(s, "{}", serde_json::json!({ "command": cmd }));
+        if self.mpv.is_none() {
+            return;
+        }
+        for _ in 0..20 {
+            if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&self.socket) {
+                let _ = writeln!(s, "{}", serde_json::json!({ "command": cmd }));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
@@ -290,7 +310,9 @@ impl Tv {
     /// Gives mpv the sound card, or takes it back. Taking the audio track
     /// away closes mpv's audio output, which a mute would not.
     pub fn set_sound(&mut self, on: bool) {
-        if self.sound == on {
+        // Asking for sound again is sent again: a first try may have found
+        // the card still busy.
+        if self.sound == on && !on {
             return;
         }
         self.sound = on;
