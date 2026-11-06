@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS playlists (
   id         INTEGER PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  station    INTEGER NOT NULL DEFAULT 1  -- 0: kept off the radio dial
+  station    INTEGER NOT NULL DEFAULT 1, -- 0: kept off the radio dial
+  genre      TEXT                        -- made by Katalog from this genre
 );
 CREATE TABLE IF NOT EXISTS playlist_tracks (
   playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
@@ -140,6 +141,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     };
     if !has("playlists", "station")? {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN station INTEGER NOT NULL DEFAULT 1")?;
+    }
+    if !has("playlists", "genre")? {
+        conn.execute_batch("ALTER TABLE playlists ADD COLUMN genre TEXT")?;
     }
     Ok(())
 }
@@ -409,6 +413,12 @@ pub fn insert_art(conn: &Connection, mime: &str, data: &[u8], source: &str) -> R
     Ok(conn.query_row("SELECT id FROM art WHERE hash = ?1", [hash], |r| r.get(0))?)
 }
 
+pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+        .optional()?)
+}
+
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -458,13 +468,15 @@ pub struct Playlist {
     pub created_at: String,
     /// On the radio dial as a station.
     pub station: bool,
+    /// Made by Katalog from this genre, and kept up to date after each scan.
+    pub genre: Option<String>,
 }
 
 const PLAYLIST_SQL: &str = r#"
 SELECT p.id, p.name,
        (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id),
        (SELECT COALESCE(SUM(t.duration_ms), 0) FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id WHERE pt.playlist_id = p.id),
-       p.created_at, p.station
+       p.created_at, p.station, p.genre
 FROM playlists p
 "#;
 
@@ -476,7 +488,105 @@ fn playlist_from_row(r: &Row) -> rusqlite::Result<Playlist> {
         duration_ms: r.get(3)?,
         created_at: r.get(4)?,
         station: r.get::<_, i64>(5)? != 0,
+        genre: r.get(6)?,
     })
+}
+
+/// A genre needs this many tracks to get a playlist of its own.
+pub const GENRE_MIN_TRACKS: usize = 8;
+
+/// The genres in a tag: "Rock; Alternative" or "Rock/Pop" are two.
+pub fn split_genres(tag: &str) -> Vec<String> {
+    tag.split([';', ',', '/', '\0', '|'])
+        .map(|g| g.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|g| !g.is_empty() && !g.chars().all(|c| c.is_ascii_digit()))
+        .collect()
+}
+
+/// Makes a playlist for every genre with enough tracks, refills the ones
+/// there are, and drops those whose genre has gone. Hand-made playlists are
+/// not touched. New ones start off the radio dial. Returns how many there are.
+pub fn sync_genre_playlists(conn: &Connection) -> Result<usize> {
+    use std::collections::HashMap;
+    // Genre (lower case) -> (spellings seen and how often, track ids in order).
+    type Seen = (HashMap<String, usize>, Vec<i64>);
+    let mut by: HashMap<String, Seen> = HashMap::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT t.id, t.genre FROM tracks t
+             JOIN albums al ON al.id = t.album_id JOIN artists ar ON ar.id = al.artist_id
+             WHERE t.genre IS NOT NULL AND t.genre <> ''
+             ORDER BY ar.name COLLATE NOCASE, al.year, al.title COLLATE NOCASE,
+                      t.disc, t.number, t.title",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, tag) = row?;
+            for g in split_genres(&tag) {
+                let e = by.entry(g.to_lowercase()).or_default();
+                *e.0.entry(g).or_default() += 1;
+                if e.1.last() != Some(&id) {
+                    e.1.push(id);
+                }
+            }
+        }
+    }
+    let mut keep = Vec::new();
+    for (key, (spellings, tracks)) in &by {
+        if tracks.len() < GENRE_MIN_TRACKS {
+            continue;
+        }
+        let name = spellings
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+            .map(|(s, _)| s.clone())
+            .unwrap_or_else(|| key.clone());
+        let id: Option<i64> = conn
+            .query_row("SELECT id FROM playlists WHERE genre = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let id = match id {
+            Some(id) => id,
+            None => {
+                // A hand-made playlist may have the name already.
+                let taken: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM playlists WHERE name = ?1 COLLATE NOCASE)",
+                    [&name],
+                    |r| r.get(0),
+                )?;
+                let name = if taken {
+                    format!("{name} (genre)")
+                } else {
+                    name
+                };
+                conn.execute(
+                    "INSERT INTO playlists (name, station, genre) VALUES (?1, 0, ?2)",
+                    params![name, key],
+                )?;
+                conn.last_insert_rowid()
+            }
+        };
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
+        let mut ins = conn.prepare(
+            "INSERT INTO playlist_tracks (playlist_id, position, track_id) VALUES (?1, ?2, ?3)",
+        )?;
+        for (pos, t) in tracks.iter().enumerate() {
+            ins.execute(params![id, pos as i64, t])?;
+        }
+        keep.push(key.clone());
+    }
+    // A genre that has gone (or got too small) takes its playlist along.
+    let old: Vec<(i64, String)> = conn
+        .prepare("SELECT id, genre FROM playlists WHERE genre IS NOT NULL")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, g) in old {
+        if !keep.contains(&g) {
+            conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
+        }
+    }
+    Ok(keep.len())
 }
 
 pub fn playlists(conn: &Connection) -> Result<Vec<Playlist>> {
@@ -737,6 +847,53 @@ pub fn picks(conn: &Connection, album_id: i64) -> Result<Vec<Pick>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn genre_playlists_follow_the_tags() {
+        assert_eq!(split_genres("Rock; Alternative"), ["Rock", "Alternative"]);
+        assert_eq!(split_genres("Rock/Pop , 17 ,"), ["Rock", "Pop"]);
+        let dir = std::env::temp_dir().join(format!("katalog-genre-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("k.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists (id, name, sort_name) VALUES (1, 'Azra', 'Azra');
+             INSERT INTO albums (id, artist_id, title, dir) VALUES (1, 1, 'A', '/a');
+             INSERT INTO playlists (name) VALUES ('Rock');",
+        )
+        .unwrap();
+        for n in 0..10 {
+            let genre = if n < 9 { "rock; New Wave" } else { "Jazz" };
+            conn.execute(
+                "INSERT INTO tracks (album_id, artist_id, title, number, path, size, mtime, codec, genre)
+                 VALUES (1, 1, ?1, ?2, ?3, 1, 1, 'flac', ?4)",
+                params![format!("t{n}"), n, format!("/a/{n}.flac"), genre],
+            )
+            .unwrap();
+        }
+        assert_eq!(sync_genre_playlists(&conn).unwrap(), 2);
+        let lists = playlists(&conn).unwrap();
+        let rock = lists
+            .iter()
+            .find(|p| p.genre.as_deref() == Some("rock"))
+            .unwrap();
+        // The hand-made "Rock" keeps its name; the genre one steps aside.
+        assert_eq!(rock.name, "rock (genre)");
+        assert_eq!(rock.track_count, 9);
+        assert!(!rock.station);
+        assert!(lists
+            .iter()
+            .any(|p| p.name == "New Wave" && p.genre.is_some()));
+        assert!(!lists.iter().any(|p| p.name == "Jazz"));
+        // Fewer rock tracks than needed: its playlist goes, the hand-made one stays.
+        conn.execute("UPDATE tracks SET genre = 'Jazz' WHERE number < 5", [])
+            .unwrap();
+        assert_eq!(sync_genre_playlists(&conn).unwrap(), 0);
+        let lists = playlists(&conn).unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].name, "Rock");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     fn library(tag: &str) -> (Connection, std::path::PathBuf) {

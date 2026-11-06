@@ -110,6 +110,12 @@ impl<'a> Scanner<'a> {
         }
         self.remove_empty_albums()?;
         self.attach_folder_art(dirs)?;
+        if report.added + report.updated + report.removed > 0
+            || db::get_meta(self.conn, "genre_playlists")?.is_none()
+        {
+            let n = db::sync_genre_playlists(self.conn)?;
+            db::set_meta(self.conn, "genre_playlists", &n.to_string())?;
+        }
         db::set_meta(self.conn, "last_scan", &db::now_iso())?;
         report.seconds = started.elapsed().as_secs_f64();
         info!(
