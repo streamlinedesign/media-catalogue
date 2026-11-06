@@ -4,6 +4,11 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Films and episodes play on the set even when no channel has anything
+  on: a channel answer arriving after you pressed play no longer stops
+  the film. Without ffprobe (part of ffmpeg), katalogd asks mpv for a
+  film's length, so the channels fill; the next scan fills in the ones
+  that had none.
 - Playback no longer gets lost when the TV has the sound card. katalogd
   used to freeze for two seconds per track waiting for it, then skip to
   the next track or play through another device. Now it waits without

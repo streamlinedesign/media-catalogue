@@ -1439,6 +1439,10 @@ impl App {
                 self.tv.set_power(true);
                 self.tune(n)
             }
+            // A film asked for wins over a channel answer still on its way.
+            Message::TvTuned(..) if matches!(self.tv.on, tv::On::Asked(_)) && self.tv.playing() => {
+                Task::none()
+            }
             Message::TvTuned(n, Ok(cw)) => {
                 if n != self.tv.channel || !self.tv.power {
                     return Task::none();
