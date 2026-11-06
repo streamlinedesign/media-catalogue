@@ -11,6 +11,8 @@
 //!   PUT  /api/tracks/{id}/lyrics      {"text": "...", "source": "lrclib"}  save by hand
 //!   DELETE /api/tracks/{id}/lyrics    take wrong lyrics away and keep them away
 //!   GET  /api/{movies|episodes}/{id}/subtitles/search?lang=en,hr   opensubtitles.com hits
+//!   PUT  /api/{movies|episodes}/{id}/progress  {"position_ms": 1, "duration_ms": 2}  where it was left (DELETE forgets)
+//!   GET  /api/left-off                 films and episodes left part way
 //!   POST /api/{movies|episodes}/{id}/subtitles  {"file_id": 1, "lang": "hr"}  save one beside the video
 //!   POST /api/scan                    full rescan
 //!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
@@ -76,6 +78,11 @@ pub fn router(state: Shared) -> Router {
         .route("/api/episodes/{id}/watch", get(watch_episode))
         .route("/api/{kind}/{id}/subtitles/search", get(search_subtitles))
         .route("/api/{kind}/{id}/subtitles", post(fetch_subtitles))
+        .route(
+            "/api/{kind}/{id}/progress",
+            axum::routing::put(put_progress).delete(delete_progress),
+        )
+        .route("/api/left-off", get(left_off))
         .route("/video/{kind}/{id}", get(video_file))
         .route("/video/{kind}/{id}/sub/{n}", get(video_sub))
         .route("/api/tracks", get(tracks))
@@ -273,11 +280,78 @@ async fn watch_channel(State(s): State<Shared>, Path(n): Path<usize>) -> ApiResu
 }
 
 async fn watch_movie(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<WatchAnswer> {
-    watch_answer(&s, "movie", None, Some(id)).await
+    resume(
+        &s,
+        "movie",
+        id,
+        watch_answer(&s, "movie", None, Some(id)).await?,
+    )
 }
 
 async fn watch_episode(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<WatchAnswer> {
-    watch_answer(&s, "episode", Some(id), None).await
+    resume(
+        &s,
+        "episode",
+        id,
+        watch_answer(&s, "episode", Some(id), None).await?,
+    )
+}
+
+/// A film or episode asked for starts where it was left.
+fn resume(
+    s: &Shared,
+    kind: &str,
+    id: i64,
+    Json(mut w): Json<WatchAnswer>,
+) -> ApiResult<WatchAnswer> {
+    let at = video::progress_of(&s.db.lock(), kind, id)?;
+    if at > 0 {
+        let last = w.mpv.len() - 1;
+        w.mpv
+            .insert(last, format!("--start={:.1}", at as f64 / 1000.0));
+    }
+    Ok(Json(w))
+}
+
+fn progress_kind(kind: &str) -> Result<&'static str, ApiError> {
+    match kind {
+        "movies" => Ok("movie"),
+        "episodes" => Ok("episode"),
+        _ => Err(not_found("films or episodes")),
+    }
+}
+
+#[derive(Deserialize)]
+struct Progress {
+    position_ms: i64,
+    #[serde(default)]
+    duration_ms: i64,
+}
+
+/// Where a film or episode is; the window sends it now and then while one
+/// you asked for plays.
+async fn put_progress(
+    State(s): State<Shared>,
+    Path((kind, id)): Path<(String, i64)>,
+    Json(p): Json<Progress>,
+) -> ApiResult<serde_json::Value> {
+    let kind = progress_kind(&kind)?;
+    video::set_progress(&s.db.lock(), kind, id, p.position_ms, p.duration_ms)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn delete_progress(
+    State(s): State<Shared>,
+    Path((kind, id)): Path<(String, i64)>,
+) -> ApiResult<serde_json::Value> {
+    let kind = progress_kind(&kind)?;
+    video::clear_progress(&s.db.lock(), kind, id)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Films and episodes left part way, the most recent first.
+async fn left_off(State(s): State<Shared>) -> ApiResult<Vec<video::LeftOff>> {
+    Ok(Json(video::left_off(&s.db.lock(), 12)?))
 }
 
 async fn watch_answer(

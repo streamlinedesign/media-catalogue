@@ -302,6 +302,20 @@ pub struct ShowWithEpisodes {
     pub episodes: Vec<Episode>,
 }
 
+/// A film or episode left part way.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LeftOff {
+    /// "movie" or "episode".
+    pub kind: String,
+    pub id: i64,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub position_ms: i64,
+    pub duration_ms: i64,
+    pub poster_id: Option<i64>,
+    pub open_id: i64,
+}
+
 /// A subtitle file on opensubtitles.com, from katalogd's search.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SubHit {

@@ -127,6 +127,9 @@ pub struct Tv {
     started: Option<std::time::Instant>,
     /// Why the set is dark, said under it, until something starts.
     pub note: Option<String>,
+    /// Whether the last mpv to end ended on an error (not just the end of
+    /// a short file).
+    failed: bool,
     /// After a failed start the set waits until then before trying again
     /// by itself, instead of starting mpv over and over.
     pub hold_until: Option<std::time::Instant>,
@@ -179,6 +182,7 @@ impl Default for Tv {
             ipc,
             started: None,
             note: None,
+            failed: false,
             hold_until: None,
             channel: 0,
             on: On::Nothing,
@@ -201,7 +205,8 @@ impl Tv {
         match &mut self.mpv {
             Some(c) => match c.try_wait() {
                 Ok(None) => true,
-                _ => {
+                r => {
+                    self.failed = !matches!(r, Ok(Some(s)) if s.success());
                     self.mpv = None;
                     false
                 }
@@ -327,11 +332,17 @@ impl Tv {
             .map_err(|e| format!("could not start mpv: {e}"))?;
         self.mpv = Some(child);
         self.started = Some(std::time::Instant::now());
+        self.failed = false;
         self.note = None;
         self.sound = sound;
         self.on = on;
         self.place();
         Ok(())
+    }
+
+    /// mpv's socket, for asking it things off the window's thread.
+    pub fn socket(&self) -> PathBuf {
+        self.socket.clone()
     }
 
     /// Sends mpv a command over its socket, without waiting for it.
@@ -346,17 +357,24 @@ impl Tv {
     /// again by itself.
     pub fn check_start(&mut self) -> bool {
         let quick = self.started.is_some_and(|t| t.elapsed().as_secs() < 5);
-        if !quick || self.playing() {
+        if !quick || self.playing() || !self.failed {
             return false;
         }
         self.started = None;
         self.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
         let said = std::fs::read_to_string(log_path()).unwrap_or_default();
-        let why = said
+        // The last error line if there is one, else the last line.
+        let lines: Vec<&str> = said
             .lines()
-            .rev()
             .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with("Exiting"))
+            .filter(|l| !l.is_empty() && !l.starts_with("Exiting"))
+            .collect();
+        let why = lines
+            .iter()
+            .rev()
+            .find(|l| l.contains("rror") || l.contains("ailed"))
+            .or(lines.last())
+            .copied()
             .unwrap_or("mpv stopped straight away")
             .to_string();
         let what = if matches!(self.on, On::Asked(_)) {
@@ -600,4 +618,38 @@ impl<'a, Message: Clone + 'a> From<Screen<'a, Message>> for Element<'a, Message>
     fn from(s: Screen<'a, Message>) -> Self {
         Element::new(s)
     }
+}
+
+/// Where mpv is and how long the file is, in ms, asked over its socket.
+/// Blocking (a fraction of a second at most): call it off the window's thread.
+pub fn position(socket: &std::path::Path) -> Option<(i64, i64)> {
+    use std::io::{BufRead, BufReader};
+    let s = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    s.set_read_timeout(Some(std::time::Duration::from_millis(400)))
+        .ok()?;
+    let mut w = s.try_clone().ok()?;
+    writeln!(
+        w,
+        r#"{{"command":["get_property","time-pos"],"request_id":1}}"#
+    )
+    .ok()?;
+    writeln!(
+        w,
+        r#"{{"command":["get_property","duration"],"request_id":2}}"#
+    )
+    .ok()?;
+    let (mut pos, mut dur) = (None, None);
+    for line in BufReader::new(s).lines() {
+        let v: serde_json::Value = serde_json::from_str(&line.ok()?).ok()?;
+        let ms = v["data"].as_f64().map(|x| (x * 1000.0) as i64);
+        match v["request_id"].as_i64() {
+            Some(1) => pos = Some(ms?),
+            Some(2) => dur = Some(ms.unwrap_or(0)),
+            _ => continue,
+        }
+        if let (Some(p), Some(d)) = (pos, dur) {
+            return Some((p, d));
+        }
+    }
+    None
 }

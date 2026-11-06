@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS episodes (
   added_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE INDEX IF NOT EXISTS episodes_show ON episodes(show_id, season, episode);
+-- Where a film or episode you asked for was left: 'movie' or 'episode'.
+-- Separate from the TV channels, which keep their own time.
+CREATE TABLE IF NOT EXISTS progress (
+  kind         TEXT NOT NULL,
+  id           INTEGER NOT NULL,
+  position_ms  INTEGER NOT NULL,
+  duration_ms  INTEGER NOT NULL DEFAULT 0,
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (kind, id)
+);
 "#;
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
@@ -1094,6 +1104,163 @@ pub fn add_sub_lang(conn: &Connection, table: &str, id: i64, lang: &str) -> Resu
     Ok(())
 }
 
+// ------------------------------------------------------- where you left off
+
+/// Less than this in, and it was only a look: nothing is kept.
+const PEEK_MS: i64 = 30_000;
+
+/// Whether a position this close to the end counts as watched: the last
+/// 5 %, or for anything over 20 minutes the last two, so the credits
+/// don't keep it open.
+fn finished(position_ms: i64, duration_ms: i64) -> bool {
+    duration_ms > 0
+        && (position_ms * 20 >= duration_ms * 19
+            || duration_ms > 1_200_000 && duration_ms - position_ms < 120_000)
+}
+
+/// Notes where a film (`kind` "movie") or an episode ("episode") is. Near
+/// the end it counts as watched and is let go; an episode then leaves the
+/// next one of its show waiting at the start.
+pub fn set_progress(
+    conn: &Connection,
+    kind: &str,
+    id: i64,
+    position_ms: i64,
+    duration_ms: i64,
+) -> Result<()> {
+    anyhow::ensure!(kind == "movie" || kind == "episode", "no kind {kind}");
+    if finished(position_ms, duration_ms) {
+        conn.execute(
+            "DELETE FROM progress WHERE kind = ?1 AND id = ?2",
+            params![kind, id],
+        )?;
+        if kind == "episode" {
+            if let Some(next) = next_episode(conn, id)? {
+                conn.execute(
+                    "INSERT INTO progress (kind, id, position_ms, duration_ms)
+                     SELECT 'episode', id, 0, duration_ms FROM episodes WHERE id = ?1
+                     ON CONFLICT(kind, id) DO NOTHING",
+                    [next],
+                )?;
+            }
+        }
+        return Ok(());
+    }
+    if position_ms < PEEK_MS {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO progress (kind, id, position_ms, duration_ms) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(kind, id) DO UPDATE SET position_ms = excluded.position_ms,
+           duration_ms = excluded.duration_ms,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        params![kind, id, position_ms, duration_ms],
+    )?;
+    if kind == "episode" {
+        // One place per show: an older episode's spot is moved on from.
+        conn.execute(
+            "DELETE FROM progress WHERE kind = 'episode' AND id != ?1 AND id IN
+               (SELECT e.id FROM episodes e WHERE e.show_id =
+                  (SELECT show_id FROM episodes WHERE id = ?1))",
+            [id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Where to start a film or episode asked for, in ms (0 from the top).
+pub fn progress_of(conn: &Connection, kind: &str, id: i64) -> Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT position_ms FROM progress WHERE kind = ?1 AND id = ?2",
+            params![kind, id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+/// Forgets a film's or episode's place.
+pub fn clear_progress(conn: &Connection, kind: &str, id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM progress WHERE kind = ?1 AND id = ?2",
+        params![kind, id],
+    )?;
+    Ok(())
+}
+
+fn next_episode(conn: &Connection, id: i64) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT n.id FROM episodes e JOIN episodes n ON n.show_id = e.show_id
+             WHERE e.id = ?1 AND (n.season, n.episode) > (e.season, e.episode)
+             ORDER BY n.season, n.episode LIMIT 1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// A film or episode left part way, for "where you left off".
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LeftOff {
+    /// "movie" or "episode".
+    pub kind: String,
+    pub id: i64,
+    /// The film, or the episode's show.
+    pub title: String,
+    /// "S01E03 · Zen", for an episode.
+    pub subtitle: Option<String>,
+    pub position_ms: i64,
+    pub duration_ms: i64,
+    pub poster_id: Option<i64>,
+    /// The film or the show, to open its page.
+    pub open_id: i64,
+}
+
+/// What was left part way, the most recent first.
+pub fn left_off(conn: &Connection, limit: usize) -> Result<Vec<LeftOff>> {
+    let mut st = conn.prepare(
+        "SELECT p.kind, p.id, p.position_ms, p.duration_ms,
+                COALESCE(m.title, s.title), m.poster_id, s.poster_id,
+                e.season, e.episode, e.title, COALESCE(m.id, s.id)
+         FROM progress p
+         LEFT JOIN movies m ON p.kind = 'movie' AND m.id = p.id
+         LEFT JOIN episodes e ON p.kind = 'episode' AND e.id = p.id
+         LEFT JOIN shows s ON s.id = e.show_id
+         WHERE m.id IS NOT NULL OR e.id IS NOT NULL
+         ORDER BY p.updated_at DESC, p.rowid DESC LIMIT ?1",
+    )?;
+    let rows = st.query_map([limit as i64], |r| {
+        let kind: String = r.get(0)?;
+        let subtitle = match r.get::<_, Option<i64>>(7)? {
+            Some(season) => {
+                let mut t = format!("S{season:02}E{:02}", r.get::<_, i64>(8)?);
+                if let Some(name) = r.get::<_, Option<String>>(9)? {
+                    t.push_str(&format!(" · {name}"));
+                }
+                Some(t)
+            }
+            None => None,
+        };
+        Ok(LeftOff {
+            poster_id: if kind == "movie" {
+                r.get(5)?
+            } else {
+                r.get(6)?
+            },
+            kind,
+            id: r.get(1)?,
+            title: r.get(4)?,
+            subtitle,
+            position_ms: r.get(2)?,
+            duration_ms: r.get(3)?,
+            open_id: r.get(10)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 // ---------------------------------------------------------------- TMDB
 
 /// A film or show still without TMDB details.
@@ -1360,6 +1527,45 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn where_you_left_off() {
+        let dir = std::env::temp_dir().join(format!("katalog-left-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = db::open(&dir.join("k.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO movies (id, title, path, size, mtime, duration_ms) VALUES (1, 'Stalker', '/m/s.mkv', 1, 1, 9000000);
+             INSERT INTO shows (id, title, dir) VALUES (1, 'Twin Peaks', '/t');
+             INSERT INTO episodes (id, show_id, season, episode, title, path, size, mtime, duration_ms) VALUES
+               (10, 1, 1, 1, 'Pilot', '/t/1', 1, 1, 3000000),
+               (11, 1, 1, 2, NULL, '/t/2', 1, 1, 3000000);",
+        )
+        .unwrap();
+        // A look is not kept.
+        set_progress(&conn, "movie", 1, 10_000, 9_000_000).unwrap();
+        assert!(left_off(&conn, 10).unwrap().is_empty());
+        set_progress(&conn, "movie", 1, 600_000, 9_000_000).unwrap();
+        set_progress(&conn, "episode", 10, 900_000, 3_000_000).unwrap();
+        assert_eq!(progress_of(&conn, "movie", 1).unwrap(), 600_000);
+        let l = left_off(&conn, 10).unwrap();
+        assert_eq!(l.len(), 2);
+        let ep = l.iter().find(|x| x.kind == "episode").unwrap();
+        assert_eq!(ep.title, "Twin Peaks");
+        assert_eq!(ep.subtitle.as_deref(), Some("S01E01 · Pilot"));
+        assert_eq!(ep.open_id, 1);
+        // Into the credits: watched, and the next episode waits at the start.
+        set_progress(&conn, "episode", 10, 2_950_000, 3_000_000).unwrap();
+        assert_eq!(progress_of(&conn, "episode", 10).unwrap(), 0);
+        let l = left_off(&conn, 10).unwrap();
+        assert!(l
+            .iter()
+            .any(|x| x.kind == "episode" && x.id == 11 && x.position_ms == 0));
+        // The last episode done, the show is let go; so is a finished film.
+        set_progress(&conn, "episode", 11, 2_990_000, 3_000_000).unwrap();
+        set_progress(&conn, "movie", 1, 8_950_000, 9_000_000).unwrap();
+        assert!(left_off(&conn, 10).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn film_names() {

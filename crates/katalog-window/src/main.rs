@@ -21,9 +21,9 @@ mod tv;
 mod video;
 
 use api::{
-    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Channel, ChannelWatch, Client, Levels,
-    Lyrics, LyricsHit, Movie, OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue,
-    Show, ShowWithEpisodes, Status, SubHit, Track, Watch,
+    fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Channel, ChannelWatch, Client, LeftOff,
+    Levels, Lyrics, LyricsHit, Movie, OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks,
+    Queue, Show, ShowWithEpisodes, Status, SubHit, Track, Watch,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -198,6 +198,11 @@ struct App {
     mpv: Option<std::process::Child>,
     tv: tv::Tv,
     channels: Vec<Channel>,
+    /// Films and episodes left part way, for Screen.
+    left_off: Vec<LeftOff>,
+    /// The film (false) or episode (true) asked for that the set is
+    /// playing, so its place can be kept.
+    watching: Option<(bool, i64)>,
     /// When the set went fullscreen, so the click that did it does not undo it.
     tv_full_at: Option<std::time::Instant>,
     /// Books and comics: the shelf and the reader.
@@ -303,6 +308,12 @@ enum Message {
     Xid(u64),
     Scale(f32),
     Channels(Result<Vec<Channel>, String>),
+    LeftOffLoaded(Result<Vec<LeftOff>, String>),
+    /// Where the film or episode asked for is: (position, length) in ms.
+    Position((bool, i64), Option<(i64, i64)>),
+    ProgressSaved,
+    /// Forget where a film or episode was left.
+    ForgetLeftOff(bool, i64),
     /// Where the set is on Screen.
     TvArea(iced::Rectangle),
     TvClick,
@@ -387,6 +398,8 @@ impl App {
             tonight_skip: 0,
             tv: tv::Tv::default(),
             channels: Vec::new(),
+            left_off: Vec::new(),
+            watching: None,
             tv_full_at: None,
             read: reader::Reader::default(),
         };
@@ -491,6 +504,35 @@ impl App {
         let task = Task::batch(tasks);
         let _ = client;
         (app, task)
+    }
+
+    fn load_left_off(&self) -> Task<Message> {
+        let c = self.client.clone();
+        Task::perform(
+            async move { c.get("/api/left-off").await },
+            Message::LeftOffLoaded,
+        )
+    }
+
+    /// Asks mpv where the film or episode asked for is, off this thread.
+    fn ask_position(&mut self) -> Task<Message> {
+        let Some(what) = self.watching else {
+            return Task::none();
+        };
+        if !matches!(self.tv.on, tv::On::Asked(_)) || !self.tv.playing() {
+            self.watching = None;
+            return Task::none();
+        }
+        let socket = self.tv.socket();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || tv::position(&socket))
+                    .await
+                    .ok()
+                    .flatten()
+            },
+            move |p| Message::Position(what, p),
+        )
     }
 
     fn load_channels(&self) -> Task<Message> {
@@ -821,6 +863,15 @@ impl App {
                 tasks.push(self.load_visible_art());
                 if (self.tab == Tab::Screen || self.tv.full) && self.ticks % 4 == 3 {
                     tasks.push(self.load_channels());
+                }
+                if self.tab == Tab::Screen
+                    && (self.ticks % 20 == 5 || self.left_off.is_empty() && self.ticks % 4 == 1)
+                {
+                    tasks.push(self.load_left_off());
+                }
+                // Every five seconds, where the film asked for is.
+                if self.ticks % 10 == 7 {
+                    tasks.push(self.ask_position());
                 }
                 if self.tab == Tab::Music && self.ticks % 4 == 1 {
                     tasks.push(self.load_on_air());
@@ -1513,6 +1564,7 @@ impl App {
                 ])
             }
             Message::Watch(episode, id) => {
+                self.watching = Some((episode, id));
                 let c = self.client.clone();
                 let path = if episode {
                     format!("/api/episodes/{id}/watch")
@@ -1580,6 +1632,44 @@ impl App {
                 self.tv.place();
                 Task::none()
             }
+            Message::LeftOffLoaded(Ok(l)) => {
+                self.left_off = l;
+                Task::none()
+            }
+            Message::LeftOffLoaded(Err(_)) => Task::none(),
+            Message::Position((episode, id), Some((pos, dur))) => {
+                let kind = if episode { "episodes" } else { "movies" };
+                let c = self.client.clone();
+                let body = serde_json::json!({ "position_ms": pos, "duration_ms": dur });
+                Task::perform(
+                    async move {
+                        c.put::<serde_json::Value>(&format!("/api/{kind}/{id}/progress"), body)
+                            .await
+                    },
+                    |_| Message::ProgressSaved,
+                )
+            }
+            Message::Position(_, None) => Task::none(),
+            Message::ProgressSaved => {
+                if self.tab == Tab::Screen {
+                    self.load_left_off()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ForgetLeftOff(episode, id) => {
+                let kind = if episode { "episodes" } else { "movies" };
+                self.left_off
+                    .retain(|l| !(l.id == id && (l.kind == "episode") == episode));
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.delete::<serde_json::Value>(&format!("/api/{kind}/{id}/progress"))
+                            .await
+                    },
+                    |_| Message::ProgressSaved,
+                )
+            }
             Message::Channels(Ok(c)) => {
                 self.channels = c;
                 self.tv_follow()
@@ -1617,6 +1707,11 @@ impl App {
             }
             Message::TvChannel(n) => {
                 self.tv.channel = n;
+                // A channel key leaves the film asked for: its answer must
+                // not be turned away as late.
+                if matches!(self.tv.on, tv::On::Asked(_)) {
+                    self.tv.on = tv::On::Nothing;
+                }
                 self.tv.set_power(true);
                 self.tune(n)
             }

@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.15.1: where you left off for films and shows
 - 0.15.0: search inside a book
 - 0.14.3: page turn buttons in the reader
 - 0.14.2: touch turns the page
