@@ -183,7 +183,22 @@ function img(id, size, crop) {
   return el("img", { src: `/art/${id}?size=${size}${crop ? "&crop=1" : ""}`, alt: "", loading: "lazy", decoding: "async" });
 }
 function abs(path) { return `${location.origin}${path}${path.includes("?") ? "&" : "?"}t=${T}`; }
-function vlc(path) { return "vlc://" + abs(path); }
+/// A link that hands the file to VLC. Android needs an intent naming VLC and
+/// the http scheme (a vlc:// address gets mangled on the way); iOS has its
+/// own x-callback form; elsewhere vlc:// is all there is.
+function vlc(path) {
+  const url = abs(path);
+  const ua = navigator.userAgent;
+  if (/Android/i.test(ua)) {
+    const rest = url.replace(/^https?:\/\//, "");
+    const scheme = location.protocol.replace(":", "");
+    return `intent://${rest}#Intent;scheme=${scheme};type=video/*;package=org.videolan.vlc;end`;
+  }
+  if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
+    return `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(url)}`;
+  }
+  return "vlc://" + url;
+}
 function matches(q, ...fields) {
   if (!q) return true;
   const hay = fields.filter(Boolean).join(" ").toLowerCase();
@@ -373,6 +388,8 @@ async function watchBox(kind, id) {
   const box = el("div");
   const v = el("video", { controls: true, preload: "metadata", playsinline: true, src });
   const note = el("p", { class: "note", hidden: true }, "This file does not play in the browser. Download it, or open it in VLC.");
+  // For any player: paste it into VLC's Open network stream, mpv, or Kodi.
+  const link = el("input", { class: "search", readonly: true, hidden: true, value: abs(src), "aria-label": "Link to the file" });
   v.addEventListener("play", () => audio.pause());
   v.addEventListener("error", () => { v.hidden = true; note.hidden = false; });
   try {
@@ -382,7 +399,9 @@ async function watchBox(kind, id) {
   } catch (_) {}
   box.append(v, note, el("div", { class: "keys" },
     el("a", { class: "key", href: src, download: true }, "Download"),
-    el("a", { class: "key ghost", href: vlc(src) }, "Open in VLC")));
+    el("a", { class: "key ghost", href: vlc(src) }, "Open in VLC"),
+    el("button", { class: "key ghost", type: "button", on: { click: () => { link.hidden = false; link.focus(); link.select(); try { document.execCommand("copy"); } catch (_) {} } } }, "Copy link")),
+    link);
   return box;
 }
 
