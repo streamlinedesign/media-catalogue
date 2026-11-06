@@ -223,6 +223,9 @@ enum Message {
     LyricsQuery(String),
     /// Search LRCLIB for the playing track; `true` keeps the artist in.
     LyricsSearch(bool),
+    /// Take the shown lyrics away (wrong, or badly synced).
+    LyricsRemove,
+    LyricsRemoved(i64, Result<serde_json::Value, String>),
     LyricsHits(i64, Result<Vec<LyricsHit>, String>),
     LyricsPick(usize),
     LyricsSaved(i64, Result<Lyrics, String>),
@@ -1188,6 +1191,35 @@ impl App {
                         t.has_lyrics = true;
                     }
                 }
+                Task::none()
+            }
+            Message::LyricsRemove => {
+                let Some(id) = self.player.track.as_ref().map(|t| t.id) else {
+                    return Task::none();
+                };
+                let c = self.client.clone();
+                Task::perform(
+                    async move { c.delete(&format!("/api/tracks/{id}/lyrics")).await },
+                    move |r| Message::LyricsRemoved(id, r),
+                )
+            }
+            Message::LyricsRemoved(id, Ok(_)) => {
+                if self.lyrics_for == Some(id) {
+                    // Back to the search, to find better ones or leave it.
+                    self.lyrics = None;
+                    self.lyrics_hits.clear();
+                    self.lyrics_note = Some("Removed. Search for better ones, or leave it.".into());
+                    if let Some(t) = self.player.track.as_mut() {
+                        t.has_lyrics = false;
+                        if self.lyrics_query.trim().is_empty() {
+                            self.lyrics_query = t.title.clone();
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::LyricsRemoved(_, Err(e)) => {
+                self.lyrics_note = Some(e);
                 Task::none()
             }
             Message::LyricsSaved(_, Err(e)) => {
@@ -2529,8 +2561,10 @@ impl App {
                 .color(alpha(CREAM, 0.8)),
             horizontal_space(),
             text(source).size(12).color(alpha(CREAM, 0.6)),
+            Space::with_width(16),
+            chip("Remove", Message::LyricsRemove),
         ]
-        .align_y(Alignment::End);
+        .align_y(Alignment::Center);
         scrollable(
             container(column![
                 head,

@@ -272,9 +272,12 @@ impl<'a> Scanner<'a> {
         if let Some((text, source)) = local {
             let synced = lyrics::is_synced(&text);
             tx.execute(
-                "INSERT INTO lyrics (track_id, synced, text, source) VALUES (?1, ?2, ?3, ?4)
+                // Not for lyrics taken away by hand.
+                "INSERT INTO lyrics (track_id, synced, text, source)
+                 SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS
+                   (SELECT 1 FROM tracks WHERE id = ?1 AND lyrics_tried = ?5)
                  ON CONFLICT(track_id) DO UPDATE SET synced=excluded.synced, text=excluded.text, source=excluded.source",
-                params![track_id, synced as i64, text, source],
+                params![track_id, synced as i64, text, source, crate::fetch::LYRICS_REMOVED],
             )?;
         }
 

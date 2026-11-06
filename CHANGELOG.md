@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Lyrics can be removed: Remove beside the lyrics takes them away and
+  goes back to the search, to pick better ones or leave the song without.
+  Removed lyrics stay away: the online lookup skips the song and a rescan
+  does not bring back an embedded tag or a `.lrc` (files are left as
+  they are). Picking lyrics by hand lifts it. `DELETE
+  /api/tracks/{id}/lyrics` does the same.
 - Films and episodes play on the set even when no channel has anything
   on: a channel answer arriving after you pressed play no longer stops
   the film. Without ffprobe (part of ffmpeg), katalogd asks mpv for a
