@@ -328,10 +328,19 @@ transcoded. Nothing on it can change the library or touch the sound card. Signin
 a cookie for a year; a new password signs every phone out.
 
 A film plays in the browser when the browser knows its codecs: H.264 or HEVC with AAC
-mostly does, also inside MKV on Android; DTS, AC-3 or old AVI files do not. Then the page
-says so and offers Download and Open in VLC (the VLC link carries the sign-in in the
-address). Subtitles beside the file (`.srt`, `.vtt`) come along. It is plain HTTP, meant
-for a home network; do not forward the port to the internet.
+mostly does, also inside MKV in Chrome. Safari (every browser on an iPhone) never opens MKV,
+so for Safari katalogd repackages the file as HLS with ffmpeg: the picture is copied as it is
+(H.264, or HEVC tagged `hvc1`), the sound too when it is AAC, AC-3 or E-AC-3, otherwise it
+becomes stereo AAC. Nothing is scaled, so it costs about as much as reading the file; the
+film starts once the first few seconds are ready, and the last three stay in
+`~/.cache/katalog/hls/` (a film takes as much room there as on disk). It needs `ffmpeg` and
+`ffprobe` on the computer. A picture in AV1, MPEG-4 or anything else does not play in
+Safari; the page says so.
+
+Every film also has Download, Open in VLC (an intent on Android, VLC's own link on iOS) and
+Copy link, the file's address with the sign-in in it, for VLC's Open network stream or mpv.
+Subtitles beside the file (`.srt`, `.vtt`) and text subtitles inside it come along as WebVTT.
+It is plain HTTP, meant for a home network; do not forward the port to the internet.
 
 ### Running it all the time
 

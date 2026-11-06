@@ -383,18 +383,25 @@ async function films() {
 
 /// A video player when the browser can play the file, and always a way out:
 /// download it, or hand it to VLC.
-async function watchBox(kind, id) {
+// Safari plays H.264 and HEVC but not inside MKV; katalogd repackages
+// such a file as HLS for it, copying the picture as it is.
+const SAFARI_HLS = !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+function needsHls(path) { return SAFARI_HLS && !/\.(mp4|m4v|mov)$/i.test(path || ""); }
+
+async function watchBox(kind, id, path) {
   const src = `/video/${kind}/${id}`;
   const box = el("div");
-  const v = el("video", { controls: true, preload: "metadata", playsinline: true, src });
+  const v = el("video", { controls: true, preload: "metadata", playsinline: true });
   const note = el("p", { class: "note", hidden: true }, "This file does not play in the browser. Download it, or open it in VLC.");
   // For any player: paste it into VLC's Open network stream, mpv, or Kodi.
   const link = el("input", { class: "search", readonly: true, hidden: true, value: abs(src), "aria-label": "Link to the file" });
+  const say = text => { note.textContent = text; note.hidden = false; };
   v.addEventListener("play", () => audio.pause());
-  v.addEventListener("error", () => { v.hidden = true; note.hidden = false; });
+  v.addEventListener("error", () => { v.hidden = true; say("This file does not play in the browser. Download it, or open it in VLC."); });
   try {
     for (const s of await api(`/web/subs/${kind}/${id}`)) {
-      v.append(el("track", { kind: "subtitles", src: `/web/sub/${kind}/${id}/${s.n}`, srclang: s.lang === "?" ? null : s.lang, label: s.lang === "?" ? "Subtitles" : s.lang }));
+      const lang = s.lang && s.lang !== "?" ? s.lang : null;
+      v.append(el("track", { kind: "subtitles", src: s.src, srclang: lang, label: s.label }));
     }
   } catch (_) {}
   box.append(v, note, el("div", { class: "keys" },
@@ -402,6 +409,23 @@ async function watchBox(kind, id) {
     el("a", { class: "key ghost", href: vlc(src) }, "Open in VLC"),
     el("button", { class: "key ghost", type: "button", on: { click: () => { link.hidden = false; link.focus(); link.select(); try { document.execCommand("copy"); } catch (_) {} } } }, "Copy link")),
     link);
+  if (!needsHls(path)) {
+    v.src = src;
+    return box;
+  }
+  const hls = `/web/hls/${kind}/${id}/index.m3u8`;
+  v.hidden = true;
+  say("Getting it ready for Safari. The first time takes a few seconds.");
+  fetch(hls, { credentials: "same-origin" }).then(async r => {
+    if (!r.ok) {
+      const why = (await r.json().catch(() => ({}))).error;
+      say(`This file does not play in Safari${why ? ": " + why : ""}. Download it, or open it in VLC.`);
+      return;
+    }
+    note.hidden = true;
+    v.hidden = false;
+    v.src = hls;
+  }).catch(() => say("katalogd did not answer. Try again, or open it in VLC."));
   return box;
 }
 
@@ -410,7 +434,7 @@ async function film(id) {
   view.replaceChildren(
     el("a", { class: "back", href: "#films" }, "Back to films"),
     head(img(m.poster_id, 342), m.title, [m.year, m.duration_ms ? minutes(m.duration_ms) : null, (m.genres || []).join(", ") || null].filter(Boolean).join(" · "), true),
-    await watchBox("movie", m.id),
+    await watchBox("movie", m.id, m.path),
     ...(m.overview ? [el("p", { class: "overview" }, m.overview)] : []));
 }
 
@@ -437,7 +461,7 @@ async function show(id, ep) {
   const playing = ep ? s.episodes.find(e => e.id === ep) : null;
   if (playing) {
     parts.push(el("h3", { class: "season" }, `Season ${playing.season}, episode ${playing.episode}${playing.title ? ": " + playing.title : ""}`));
-    parts.push(await watchBox("episode", playing.id));
+    parts.push(await watchBox("episode", playing.id, playing.path));
   } else if (s.overview) {
     parts.push(el("p", { class: "overview" }, s.overview));
   }
