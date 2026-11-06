@@ -268,10 +268,44 @@ pub fn probe(path: &Path) -> Probe {
         ])
         .arg(path)
         .output();
-    match out {
+    let mut p = match out {
         Ok(o) if o.status.success() => parse_probe(&o.stdout),
         _ => Probe::default(),
+    };
+    if p.duration_ms <= 0 {
+        // No ffprobe (it comes with ffmpeg, which not every machine has):
+        // mpv, which the set needs anyway, can tell the length too.
+        p.duration_ms = mpv_duration_ms(path);
     }
+    p
+}
+
+/// The length of a film or episode as mpv reads it, 0 when it can't.
+fn mpv_duration_ms(path: &Path) -> i64 {
+    let out = std::process::Command::new("mpv")
+        .args([
+            "--no-config",
+            "--vo=null",
+            "--ao=null",
+            "--aid=no",
+            "--sid=no",
+            "--sub-auto=no",
+            "--frames=1",
+            "--term-playing-msg=KATALOG_DURATION=${=duration}",
+        ])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .output();
+    let Ok(o) = out else { return 0 };
+    parse_mpv_duration(&String::from_utf8_lossy(&o.stdout))
+}
+
+fn parse_mpv_duration(said: &str) -> i64 {
+    said.lines()
+        .find_map(|l| l.trim().strip_prefix("KATALOG_DURATION="))
+        .and_then(|d| d.trim().parse::<f64>().ok())
+        .map(|secs| (secs * 1000.0) as i64)
+        .unwrap_or(0)
 }
 
 fn parse_probe(json: &[u8]) -> Probe {
@@ -595,15 +629,17 @@ fn scan_movies(
             let Some((size, mtime)) = stat(&path) else {
                 continue;
             };
-            let known: Option<(i64, i64, i64)> = conn
+            let known: Option<(i64, i64, i64, bool)> = conn
                 .query_row(
-                    "SELECT id, size, mtime FROM movies WHERE path = ?1",
+                    "SELECT id, size, mtime, duration_ms > 0 FROM movies WHERE path = ?1",
                     [&key],
-                    |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)),
+                    |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?)),
                 )
                 .optional()?;
             r.movies += 1;
-            if known.is_some_and(|(_, s, m)| s == size && m == mtime) {
+            // Unchanged and with a length: nothing to do. One without a length
+            // (probed before mpv could stand in for ffprobe) is tried again.
+            if known.is_some_and(|(_, s, m, timed)| s == size && m == mtime && timed) {
                 continue;
             }
             // A film alone in its folder takes the folder's name, which is
@@ -713,15 +749,17 @@ fn scan_shows(
                 let Some((size, mtime)) = stat(path) else {
                     continue;
                 };
-                let known: Option<(i64, i64, i64)> = conn
+                let known: Option<(i64, i64, i64, bool)> = conn
                     .query_row(
-                        "SELECT id, size, mtime FROM episodes WHERE path = ?1",
+                        "SELECT id, size, mtime, duration_ms > 0 FROM episodes WHERE path = ?1",
                         [&key],
-                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)),
+                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?)),
                     )
                     .optional()?;
                 r.episodes += 1;
-                if known.is_some_and(|(_, s, m)| s == size && m == mtime) {
+                // Unchanged and with a length: nothing to do. One without a length
+                // (probed before mpv could stand in for ffprobe) is tried again.
+                if known.is_some_and(|(_, s, m, timed)| s == size && m == mtime && timed) {
                     continue;
                 }
                 let stem = path
@@ -1292,6 +1330,15 @@ fn details_from(kind: Kind, d: &serde_json::Value) -> Details {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mpv_tells_the_length() {
+        let said = " (+) Video --vid=1\nKATALOG_DURATION=5.003000\nExiting... (End of file)\n";
+        assert_eq!(parse_mpv_duration(said), 5003);
+        assert_eq!(parse_mpv_duration("KATALOG_DURATION=\n"), 0);
+        assert_eq!(parse_mpv_duration(""), 0);
+    }
+
     use super::*;
 
     #[test]
