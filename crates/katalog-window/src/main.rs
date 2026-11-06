@@ -1944,6 +1944,13 @@ impl App {
             spectrum,
             iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
             iced::event::listen_with(|event, _status, _id| match event {
+                // Fingers go to the reader, which turns the page on a tap.
+                iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. }) => {
+                    Some(Message::Read(reader::Msg::Finger(true, position)))
+                }
+                iced::Event::Touch(iced::touch::Event::FingerLifted { position, .. }) => {
+                    Some(Message::Read(reader::Msg::Finger(false, position)))
+                }
                 iced::Event::Window(window::Event::Resized(size)) => {
                     Some(Message::Resized(size.width, size.height))
                 }

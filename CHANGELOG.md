@@ -4,6 +4,9 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Touch turns the page. Taps are now read from the window itself rather
+  than by the page, which never saw them; a tap on the right half of a
+  comic or PDF goes on, the left half back, and a drag still scrolls.
 - Reader fixes. Rotate now has a way back: Turn back and Other way in
   the bar, `r` to turn back, and the screen comes back when the window
   quits; the touchscreen and pen are mapped to the turned screen so taps

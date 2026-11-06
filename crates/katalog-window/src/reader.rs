@@ -435,6 +435,8 @@ pub struct Reader {
     dir: usize,
     /// Holds the turned screen, to put it back if the window quits turned.
     restore: Restore,
+    /// Where a finger went down, to tell a tap from a drag when it lifts.
+    finger: Option<Point>,
     pub error: Option<String>,
 }
 
@@ -454,6 +456,7 @@ impl Default for Reader {
             page_turn: 0,
             dir: 1,
             restore: Restore(None),
+            finger: None,
             error: None,
         }
     }
@@ -515,6 +518,10 @@ pub enum Msg {
     /// Up or down a step: scrolls a chapter or a page shown to its width,
     /// turns the page otherwise.
     Step(f32),
+    /// A finger down (true) or up on the window. Taps are read here, from
+    /// the window, rather than by the page itself: a scrolled page takes
+    /// every finger for scrolling, so it never sees a tap.
+    Finger(bool, Point),
     Chrome,
 }
 
@@ -1652,6 +1659,36 @@ impl Reader {
                 self.dir = 3 - self.dir;
                 self.turn_to(self.dir)
             }
+            Msg::Finger(down, at) => {
+                if down {
+                    self.finger = Some(at);
+                    return Task::none();
+                }
+                let Some(from) = self.finger.take() else {
+                    return Task::none();
+                };
+                let Some(o) = self.open.as_ref() else {
+                    return Task::none();
+                };
+                // A drag scrolls, and an EPUB keeps its taps for picking words.
+                // The bar, the foot and the side panel keep theirs for buttons.
+                let moved = (at.x - from.x).abs() + (at.y - from.y).abs() > 16.0;
+                if moved || o.full.book.format == "epub" {
+                    return Task::none();
+                }
+                let chrome = !o.full.book.is_comic() || o.chrome;
+                let top = if chrome { BAR_H + 1.0 } else { 0.0 };
+                let bottom = self.window.height - if chrome { FOOT_H + 1.0 } else { 0.0 };
+                let side_w = if o.side != Side::None { SIDE_W } else { 0.0 };
+                if at.y < top || at.y > bottom || at.x < side_w {
+                    return Task::none();
+                }
+                let y = (at.y - top) / (bottom - top).max(1.0);
+                self.update(
+                    Msg::PageClick(-1, Point::new(0.5, y), at.x / self.window.width.max(1.0)),
+                    c,
+                )
+            }
             Msg::Step(d) => {
                 let Some(o) = self.open.as_ref() else {
                     return Task::none();
@@ -1842,9 +1879,6 @@ struct PageMarks<'a> {
 struct Drag {
     from: Option<Point>,
     to: Option<Point>,
-    /// A finger on the page: where it went down (window coordinates), and
-    /// whether it has moved far enough to be a scroll rather than a tap.
-    finger: Option<(Point, bool)>,
 }
 
 fn frac(p: Point, b: Rectangle) -> Point {
@@ -1865,43 +1899,6 @@ impl Program<Msg> for PageMarks<'_> {
         cursor: mouse::Cursor,
     ) -> (canvas::event::Status, Option<Msg>) {
         use canvas::event::Status;
-        use iced::touch;
-        // Fingers first: they come without a cursor. A tap turns the page or
-        // opens a highlight; a drag is left alone, so the page scrolls under it.
-        match event {
-            canvas::Event::Touch(touch::Event::FingerPressed { position, .. })
-                if bounds.contains(position) =>
-            {
-                st.finger = Some((position, false));
-                return (Status::Ignored, None);
-            }
-            canvas::Event::Touch(touch::Event::FingerMoved { position, .. }) => {
-                if let Some((at, moved)) = st.finger.as_mut() {
-                    if (position.x - at.x).abs() + (position.y - at.y).abs() > 12.0 {
-                        *moved = true;
-                    }
-                }
-                return (Status::Ignored, None);
-            }
-            canvas::Event::Touch(touch::Event::FingerLifted { position, .. }) => {
-                return match st.finger.take() {
-                    Some((_, false)) if bounds.contains(position) => (
-                        Status::Captured,
-                        Some(Msg::PageClick(
-                            self.page,
-                            frac(position, bounds),
-                            position.x / self.window_w.max(1.0),
-                        )),
-                    ),
-                    _ => (Status::Ignored, None),
-                };
-            }
-            canvas::Event::Touch(touch::Event::FingerLost { .. }) => {
-                st.finger = None;
-                return (Status::Ignored, None);
-            }
-            _ => {}
-        }
         let Some(pos) = cursor.position() else {
             return (Status::Ignored, None);
         };
@@ -3431,6 +3428,37 @@ mod tests {
         assert_eq!(r.shown_pages(&o), [4, 3]);
         r.window = Size::new(900.0, 1600.0);
         assert_eq!(r.shown_pages(&o), [3]);
+    }
+
+    #[test]
+    fn a_tap_turns_by_the_half_and_a_drag_does_not() {
+        let c = Client::new("http://127.0.0.1:1".into());
+        let mut r = Reader {
+            window: Size::new(1600.0, 900.0),
+            ..Default::default()
+        };
+        r.prefs.spread = false;
+        r.prefs.right_to_left = false;
+        let mut o = open_with(10);
+        o.page = 4;
+        r.open = Some(o);
+        let tap = |r: &mut Reader, a: Point, b: Point| {
+            let _ = r.update(Msg::Finger(true, a), &c);
+            let _ = r.update(Msg::Finger(false, b), &c);
+            r.open.as_ref().unwrap().page
+        };
+        let right = Point::new(1200.0, 450.0);
+        let left = Point::new(300.0, 450.0);
+        assert_eq!(tap(&mut r, right, right), 5);
+        assert_eq!(tap(&mut r, left, left), 4);
+        assert_eq!(tap(&mut r, right, Point::new(900.0, 450.0)), 4, "a drag");
+        assert_eq!(
+            tap(&mut r, Point::new(1200.0, 20.0), Point::new(1200.0, 20.0)),
+            4,
+            "the bar"
+        );
+        r.prefs.right_to_left = true;
+        assert_eq!(tap(&mut r, left, left), 5);
     }
 
     fn open_with(pages: i64) -> Open {
