@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.14.2: touch turns the page
 - 0.14.1: rotate turns back, tap halves turn pages, arrows scroll, big RAR comics load fast
 - 0.14.0: books and comics, and a reader with highlights, notes, bookmarks, dark PDFs and rotate
 - 0.13.5: fetch missing subtitles from opensubtitles.com
