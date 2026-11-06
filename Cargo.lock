@@ -2397,6 +2397,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "encoding_rs",
  "image 0.25.10",
  "lofty",
  "reqwest",

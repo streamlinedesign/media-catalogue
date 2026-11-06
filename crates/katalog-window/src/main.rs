@@ -23,7 +23,7 @@ mod video;
 use api::{
     fmt_long, fmt_ms, Album, AlbumWithTracks, Artist, Channel, ChannelWatch, Client, Levels,
     Lyrics, LyricsHit, Movie, OnAir, Pick, PlayState, Player, Playlist, PlaylistWithTracks, Queue,
-    Show, ShowWithEpisodes, Status, Track, Watch,
+    Show, ShowWithEpisodes, Status, SubHit, Track, Watch,
 };
 use clap::Parser;
 use iced::keyboard::{self, key::Named, Key};
@@ -154,6 +154,11 @@ struct App {
     lyrics_hits: Vec<LyricsHit>,
     lyrics_searching: bool,
     lyrics_note: Option<String>,
+    /// Subtitle search: for which film or episode (true for an episode),
+    /// what came back, and a line to say how it went.
+    subs_for: Option<(bool, i64)>,
+    subs_hits: Vec<SubHit>,
+    subs_note: Option<String>,
     art: HashMap<(i64, u32), image::Handle>,
     art_loading: HashSet<(i64, u32)>,
     width: f32,
@@ -235,6 +240,12 @@ enum Message {
     LyricsQuery(String),
     /// Search LRCLIB for the playing track; `true` keeps the artist in.
     LyricsSearch(bool),
+    /// Look for subtitles for a film (false) or an episode (true), or stop.
+    SubsFind(bool, i64),
+    SubsHits((bool, i64), Result<Vec<SubHit>, String>),
+    SubsPick(usize),
+    SubsSaved((bool, i64), Result<serde_json::Value, String>),
+    SubsClose,
     /// Take the shown lyrics away (wrong, or badly synced).
     LyricsRemove,
     LyricsRemoved(i64, Result<serde_json::Value, String>),
@@ -339,6 +350,9 @@ impl App {
             lyrics_hits: Vec::new(),
             lyrics_searching: false,
             lyrics_note: None,
+            subs_for: None,
+            subs_hits: Vec::new(),
+            subs_note: None,
             art: HashMap::new(),
             art_loading: HashSet::new(),
             width: 1280.0,
@@ -1225,6 +1239,93 @@ impl App {
                         t.has_lyrics = true;
                     }
                 }
+                Task::none()
+            }
+            Message::SubsFind(episode, id) => {
+                if self.subs_for == Some((episode, id)) && self.subs_note.is_none() {
+                    // Pressed again: put it away.
+                    return Task::done(Message::SubsClose);
+                }
+                self.subs_for = Some((episode, id));
+                self.subs_hits.clear();
+                self.subs_note = Some("Looking on opensubtitles.com…".into());
+                let kind = if episode { "episodes" } else { "movies" };
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.get::<Vec<SubHit>>(&format!("/api/{kind}/{id}/subtitles/search"))
+                            .await
+                    },
+                    move |r| Message::SubsHits((episode, id), r),
+                )
+            }
+            Message::SubsHits(what, r) => {
+                if self.subs_for != Some(what) {
+                    return Task::none();
+                }
+                match r {
+                    Ok(hits) => {
+                        self.subs_note = hits
+                            .is_empty()
+                            .then(|| "Nothing found in your languages.".to_string());
+                        self.subs_hits = hits;
+                    }
+                    Err(e) => self.subs_note = Some(e),
+                }
+                Task::none()
+            }
+            Message::SubsPick(i) => {
+                let (Some((episode, id)), Some(hit)) = (self.subs_for, self.subs_hits.get(i))
+                else {
+                    return Task::none();
+                };
+                let kind = if episode { "episodes" } else { "movies" };
+                let body = serde_json::json!({ "file_id": hit.file_id, "lang": hit.language });
+                self.subs_note = Some("Fetching…".into());
+                let c = self.client.clone();
+                Task::perform(
+                    async move {
+                        c.post::<serde_json::Value>(
+                            &format!("/api/{kind}/{id}/subtitles"),
+                            Some(body),
+                        )
+                        .await
+                    },
+                    move |r| Message::SubsSaved((episode, id), r),
+                )
+            }
+            Message::SubsSaved(what, r) => {
+                if self.subs_for != Some(what) {
+                    return Task::none();
+                }
+                match r {
+                    Ok(v) => {
+                        let lang = v["lang"].as_str().unwrap_or("").to_string();
+                        self.subs_hits.clear();
+                        self.subs_note = Some(format!(
+                            "Saved beside the file ({lang}). The set uses it from the next play."
+                        ));
+                        // The film or show page shows the new language.
+                        let mut t = vec![self.load_video()];
+                        if let (true, Some(show)) = (what.0, self.show_open) {
+                            let c = self.client.clone();
+                            t.push(Task::perform(
+                                async move { c.get(&format!("/api/shows/{show}")).await },
+                                Message::ShowLoaded,
+                            ));
+                        }
+                        Task::batch(t)
+                    }
+                    Err(e) => {
+                        self.subs_note = Some(e);
+                        Task::none()
+                    }
+                }
+            }
+            Message::SubsClose => {
+                self.subs_for = None;
+                self.subs_hits.clear();
+                self.subs_note = None;
                 Task::none()
             }
             Message::LyricsRemove => {

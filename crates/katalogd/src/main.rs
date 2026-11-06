@@ -73,6 +73,15 @@ pub struct Args {
     /// Without one, films and shows keep the names from their files.
     #[arg(long, env = "TMDB_KEY", hide_env_values = true)]
     tmdb_key: Option<String>,
+
+    /// opensubtitles.com API key, to fetch subtitles a film or episode
+    /// lacks. Without one, only the subtitle files you have are used.
+    #[arg(long, env = "OPENSUBTITLES_KEY", hide_env_values = true)]
+    opensubtitles_key: Option<String>,
+
+    /// Languages to look for subtitles in, comma separated (ISO 639-1).
+    #[arg(long, env = "KATALOG_SUB_LANGS", default_value = "en")]
+    sub_langs: String,
 }
 
 fn home() -> PathBuf {

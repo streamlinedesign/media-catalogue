@@ -18,6 +18,11 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
   like, a marks panel that copies them all as Markdown, and a rotate key
   that turns the screen for a foldable. Books and comics also have their
   own sections in the catalogue.
+- Subtitles from opensubtitles.com. With `OPENSUBTITLES_KEY` set, Find
+  subtitles on a film's page (or "subs" beside an episode) lists what
+  there is in `KATALOG_SUB_LANGS`, the ones made for this very file
+  first, and a pick is saved beside the video as `Film.hr.srt`. Old
+  Windows code pages (1250 for Croatian and so on) are turned into UTF-8.
 - Lyrics can be removed: Remove beside the lyrics takes them away and
   goes back to the search, to pick better ones or leave the song without.
   Removed lyrics stay away: the online lookup skips the song and a rescan

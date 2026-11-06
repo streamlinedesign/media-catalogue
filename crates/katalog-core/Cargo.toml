@@ -16,6 +16,7 @@ lofty.workspace = true
 walkdir.workspace = true
 blake3.workspace = true
 reqwest.workspace = true
+encoding_rs = "0.8"
 tokio.workspace = true
 urlencoding.workspace = true
 image.workspace = true

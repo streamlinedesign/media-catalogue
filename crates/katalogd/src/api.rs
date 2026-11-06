@@ -10,6 +10,8 @@
 //!   GET  /api/tracks/{id}/lyrics/search?q=&artist=   LRCLIB hits to pick from
 //!   PUT  /api/tracks/{id}/lyrics      {"text": "...", "source": "lrclib"}  save by hand
 //!   DELETE /api/tracks/{id}/lyrics    take wrong lyrics away and keep them away
+//!   GET  /api/{movies|episodes}/{id}/subtitles/search?lang=en,hr   opensubtitles.com hits
+//!   POST /api/{movies|episodes}/{id}/subtitles  {"file_id": 1, "lang": "hr"}  save one beside the video
 //!   POST /api/scan                    full rescan
 //!   POST /api/fetch?kind=lyrics|art|all&retry=1   look up missing art and lyrics online
 //!   GET  /art/{id}?size=256&crop=1    image bytes; with size, a JPEG no larger than that (crop: square)
@@ -72,6 +74,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/channels/{n}/watch", get(watch_channel))
         .route("/api/movies/{id}/watch", get(watch_movie))
         .route("/api/episodes/{id}/watch", get(watch_episode))
+        .route("/api/{kind}/{id}/subtitles/search", get(search_subtitles))
+        .route("/api/{kind}/{id}/subtitles", post(fetch_subtitles))
         .route("/video/{kind}/{id}", get(video_file))
         .route("/video/{kind}/{id}/sub/{n}", get(video_sub))
         .route("/api/tracks", get(tracks))
@@ -469,6 +473,125 @@ async fn delete_lyrics(
     db::track(&conn, id)?.ok_or_else(|| not_found("track"))?;
     katalog_core::fetch::remove_lyrics(&conn, id)?;
     Ok(Json(serde_json::json!({ "removed": id })))
+}
+
+#[derive(Deserialize)]
+struct SubsQuery {
+    /// Comma separated; katalogd's own list when left out.
+    lang: Option<String>,
+}
+
+/// Owned copy of what to look for, so the database lock is not held
+/// across the request.
+struct SubsTarget {
+    table: &'static str,
+    title: String,
+    year: Option<i64>,
+    tmdb_id: Option<i64>,
+    episode: Option<(i64, i64)>,
+    path: std::path::PathBuf,
+}
+
+fn subs_target(s: &Shared, kind: &str, id: i64) -> Result<SubsTarget, ApiError> {
+    let conn = s.db.lock();
+    match kind {
+        "movies" => {
+            let m = video::movie(&conn, id)?.ok_or_else(|| not_found("film"))?;
+            Ok(SubsTarget {
+                table: "movies",
+                title: m.title,
+                year: m.year,
+                tmdb_id: m.tmdb_id,
+                episode: None,
+                path: m.path.into(),
+            })
+        }
+        "episodes" => {
+            let e = video::episode(&conn, id)?.ok_or_else(|| not_found("episode"))?;
+            let show = video::show(&conn, e.show_id)?.ok_or_else(|| not_found("show"))?;
+            Ok(SubsTarget {
+                table: "episodes",
+                title: show.title,
+                year: show.year,
+                tmdb_id: show.tmdb_id,
+                episode: Some((e.season, e.episode)),
+                path: e.path.into(),
+            })
+        }
+        _ => Err(not_found("films or episodes")),
+    }
+}
+
+fn opensubtitles(s: &Shared) -> Result<katalog_core::subs::OpenSubtitles, ApiError> {
+    if s.args.no_network {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "katalogd was started with --no-network".into(),
+        ));
+    }
+    let key = s
+        .args
+        .opensubtitles_key
+        .as_deref()
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::PRECONDITION_FAILED,
+                "no OpenSubtitles key: start katalogd with OPENSUBTITLES_KEY set".into(),
+            )
+        })?;
+    Ok(katalog_core::subs::OpenSubtitles::new(key)?)
+}
+
+/// Subtitles on opensubtitles.com for a film or an episode, best first.
+async fn search_subtitles(
+    State(s): State<Shared>,
+    Path((kind, id)): Path<(String, i64)>,
+    Query(q): Query<SubsQuery>,
+) -> ApiResult<Vec<katalog_core::subs::SubHit>> {
+    let os = opensubtitles(&s)?;
+    let t = subs_target(&s, &kind, id)?;
+    let langs = q.lang.unwrap_or_else(|| s.args.sub_langs.clone());
+    let wanted = katalog_core::subs::Wanted {
+        title: &t.title,
+        year: t.year,
+        tmdb_id: t.tmdb_id,
+        episode: t.episode,
+        path: &t.path,
+    };
+    let hits = os
+        .search(&wanted, &langs)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    Ok(Json(hits))
+}
+
+#[derive(Deserialize)]
+struct SubsPick {
+    file_id: i64,
+    lang: String,
+}
+
+/// Downloads one subtitle file and saves it beside the video.
+async fn fetch_subtitles(
+    State(s): State<Shared>,
+    Path((kind, id)): Path<(String, i64)>,
+    Json(pick): Json<SubsPick>,
+) -> ApiResult<serde_json::Value> {
+    let os = opensubtitles(&s)?;
+    let t = subs_target(&s, &kind, id)?;
+    let text = os
+        .download(pick.file_id, &pick.lang)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    let saved = katalog_core::subs::save_beside(&t.path, &pick.lang, &text)?;
+    let lang = pick.lang.to_lowercase();
+    video::add_sub_lang(&s.db.lock(), t.table, id, &lang)?;
+    tracing::info!("subtitles saved: {}", saved.display());
+    Ok(Json(serde_json::json!({
+        "path": saved.to_string_lossy(),
+        "lang": lang,
+    })))
 }
 
 async fn scan(State(s): State<Shared>) -> ApiResult<katalog_core::ScanReport> {

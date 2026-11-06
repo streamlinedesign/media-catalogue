@@ -5,8 +5,8 @@
 use crate::api::{fmt_long, fmt_ms, Episode, Movie, Show};
 use crate::{chip, style, App, Message, Tab, GUTTER};
 use iced::widget::{
-    column, container, horizontal_rule, horizontal_space, image, mouse_area, row, scrollable, text,
-    Space,
+    button, column, container, horizontal_rule, horizontal_space, image, mouse_area, row,
+    scrollable, text, Space,
 };
 use iced::{Alignment, Element, Length};
 use style::{alpha, BLACK, BOLD, CREAM};
@@ -256,6 +256,8 @@ impl App {
             row![
                 chip("Play", Message::Watch(false, m.id)),
                 Space::with_width(8),
+                chip("Find subtitles", Message::SubsFind(false, m.id)),
+                Space::with_width(8),
                 chip("Back", Message::Back)
             ],
             Space::with_height(28),
@@ -271,6 +273,9 @@ impl App {
         info = info
             .push(Space::with_height(6))
             .push(text(subs_line(&m.subs)).size(13).color(alpha(CREAM, 0.85)));
+        if self.subs_for == Some((false, m.id)) {
+            info = info.push(Space::with_height(12)).push(self.subs_panel());
+        }
         let body = row![
             self.poster(m.poster_id, &m.title, m.id, side),
             Space::with_width(GUTTER),
@@ -354,7 +359,12 @@ impl App {
                                 .width(Length::Fill)
                                 .clip(true),
                             text(subs).size(12).color(alpha(CREAM, 0.7)),
-                            Space::with_width(16),
+                            Space::with_width(12),
+                            button(text("subs").size(11).color(alpha(CREAM, 0.7)))
+                                .style(style::plain)
+                                .padding([2, 6])
+                                .on_press(Message::SubsFind(true, e.id)),
+                            Space::with_width(12),
                             text(if e.duration_ms > 0 {
                                 fmt_ms(e.duration_ms)
                             } else {
@@ -370,6 +380,9 @@ impl App {
                 .on_press(Message::Watch(true, e.id))
                 .interaction(iced::mouse::Interaction::Pointer),
             );
+            if self.subs_for == Some((true, e.id)) {
+                info = info.push(self.subs_panel()).push(Space::with_height(8));
+            }
         }
         let body = row![
             self.poster(s.poster_id, &s.title, s.id, side),
@@ -385,6 +398,55 @@ impl App {
         .style(style::scroll(CREAM))
         .height(Length::Fill)
         .into()
+    }
+}
+
+impl App {
+    /// The subtitle search for the open film or episode: a line on how it
+    /// went, then the hits to pick from (in sync first, then the most used).
+    fn subs_panel(&self) -> Element<'_, Message> {
+        let mut col = column![].spacing(2);
+        if let Some(n) = &self.subs_note {
+            col = col.push(text(n.clone()).size(13).color(alpha(CREAM, 0.85)));
+        }
+        for (i, h) in self.subs_hits.iter().take(10).enumerate() {
+            let mut what = vec![h.language.clone()];
+            if h.exact {
+                what.push("made for this file".into());
+            }
+            if h.hearing_impaired {
+                what.push("hearing impaired".into());
+            }
+            what.push(format!("{} downloads", h.downloads));
+            col = col.push(
+                button(
+                    row![
+                        container(
+                            text(if h.release.is_empty() {
+                                "untitled".into()
+                            } else {
+                                h.release.clone()
+                            })
+                            .size(14)
+                            .wrapping(text::Wrapping::None)
+                        )
+                        .width(Length::Fill)
+                        .clip(true),
+                        Space::with_width(12),
+                        text(what.join(" · ")).size(12).color(alpha(CREAM, 0.7)),
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .style(style::plain)
+                .padding([5, 0])
+                .width(Length::Fill)
+                .on_press(Message::SubsPick(i)),
+            );
+        }
+        col = col
+            .push(Space::with_height(4))
+            .push(chip("Close", Message::SubsClose));
+        container(col).padding([8, 0]).into()
     }
 }
 

@@ -9,6 +9,7 @@ pub mod fetch;
 pub mod lyrics;
 pub mod scan;
 pub mod stations;
+pub mod subs;
 pub mod video;
 
 pub use db::{Album, Artist, Lyrics, Stats, Track};
