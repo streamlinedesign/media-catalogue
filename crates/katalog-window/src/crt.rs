@@ -10,12 +10,12 @@ use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 
 /// Pixels from one scanline to the next.
 const PITCH: f32 = 3.0;
-const LINE_ALPHA: f32 = 0.42;
+const LINE_ALPHA: f32 = 0.28;
 /// The lit line between two dark ones: what makes the raster show on black.
-const GLOW_ALPHA: f32 = 0.06;
+const GLOW_ALPHA: f32 = 0.03;
 /// How far the vignette reaches in from each edge, as a share of the side.
-const VIGNETTE: f32 = 0.22;
-const VIGNETTE_ALPHA: f32 = 0.6;
+const VIGNETTE: f32 = 0.18;
+const VIGNETTE_ALPHA: f32 = 0.45;
 
 #[derive(Default)]
 pub struct Crt {

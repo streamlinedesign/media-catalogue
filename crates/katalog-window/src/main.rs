@@ -520,9 +520,6 @@ impl App {
             self.tv.set_sound(false);
             return Task::none();
         }
-        if self.tv.sound {
-            return Task::none();
-        }
         if self.player.state == PlayState::Playing {
             self.player_post("/api/player/pause", None)
                 .chain(Task::done(Message::TvSound(true)))
@@ -710,6 +707,14 @@ impl App {
         if self.tab != before {
             self.tv_tab_changed();
         }
+        // mpv plays to katalogd's card when katalogd is on this machine.
+        let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+            .iter()
+            .any(|h| self.client.base.starts_with(h));
+        self.tv.audio_device = (local
+            && !self.player.device.is_empty()
+            && self.player.device != "default")
+            .then(|| self.player.device.clone());
         // Music started while the set had sound: the card goes back to it.
         if self.tv.sound && self.player.state == PlayState::Playing {
             self.tv.set_sound(false);
@@ -1333,12 +1338,19 @@ impl App {
             Message::Watching(Ok(w)) if !self.tv.standalone && self.tv.parent.is_some() => {
                 // On the set, with sound; a click makes it fullscreen.
                 let args = w.args(&self.client.base);
-                self.tv.power = true;
-                if let Err(e) = self.tv.play(&args, tv::On::Asked(w.title.clone()), false) {
+                self.tv.set_power(true);
+                // Started with sound when the card is free; otherwise the
+                // music is paused first and the set takes it after.
+                let free = self.player.state != PlayState::Playing;
+                if let Err(e) = self.tv.play(&args, tv::On::Asked(w.title.clone()), free) {
                     self.error = Some(e);
                 }
                 self.tab = Tab::Screen;
-                self.tv_sound(true)
+                if free {
+                    Task::none()
+                } else {
+                    self.tv_sound(true)
+                }
             }
             Message::Watching(Ok(w)) => {
                 if let Some(mut old) = self.mpv.take() {
@@ -1416,7 +1428,7 @@ impl App {
             }
             Message::TvChannel(n) => {
                 self.tv.channel = n;
-                self.tv.power = true;
+                self.tv.set_power(true);
                 self.tune(n)
             }
             Message::TvTuned(n, Ok(cw)) => {
@@ -1424,14 +1436,22 @@ impl App {
                     return Task::none();
                 }
                 let args = cw.watch.args(&self.client.base);
+                // A set that had sound keeps it on the next programme, as
+                // long as the music hasn't taken the card back meanwhile.
+                let free = self.player.state != PlayState::Playing;
+                let keep = self.tv.sound && free;
                 if let Err(e) = self
                     .tv
-                    .play(&args, tv::On::Channel(n, cw.slot.start_ms), false)
+                    .play(&args, tv::On::Channel(n, cw.slot.start_ms), keep)
                 {
                     self.error = Some(e);
                 }
-                let sound = self.tv.full || self.tv.standalone;
-                self.tv_sound(sound)
+                let sound = !keep && (self.tv.full || self.tv.standalone);
+                if sound {
+                    self.tv_sound(true)
+                } else {
+                    Task::none()
+                }
             }
             Message::TvTuned(_, Err(_)) => {
                 // Nothing on (no films with a known length yet): stay dark.
@@ -1459,14 +1479,12 @@ impl App {
                     self.tv_follow()
                 } else {
                     self.tv.stop();
-                    // The set folds away; it says where it is again when back on.
-                    self.tv.area = None;
                     self.tv.place();
                     self.tv_fullscreen(false)
                 }
             }
-            // Cycling audio on a silent set would open the card behind the music.
-            Message::TvCycle("audio") if !self.tv.sound => Task::none(),
+            // AUDIO on a silent set gives it sound (pausing the music first).
+            Message::TvCycle("audio") if !self.tv.sound => self.tv_sound(true),
             Message::TvCycle(what) => {
                 self.tv.command(serde_json::json!(["cycle", what]));
                 Task::none()
