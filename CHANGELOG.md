@@ -4,6 +4,16 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Where you left off, for films and shows, apart from the TV channels.
+  While a film or episode you asked for plays, the window notes where it
+  is every five seconds; Play and Resume start from there. Near the end
+  (the last 5 %, or two minutes of anything longer than 20) it counts as
+  watched and is let go, and an episode leaves the next one of its show
+  waiting. Screen lists them under Tonight's film, with Resume and ×.
+  `GET /api/left-off`, `PUT`/`DELETE /api/{movies|episodes}/{id}/progress`.
+- A channel key while a film plays tunes the channel again (it was
+  ignored), and a channel item that simply ends within seconds is no
+  longer taken for one that failed to start.
 - Touch turns the page. Taps are now read from the window itself rather
   than by the page, which never saw them; a tap on the right half of a
   comic or PDF goes on, the left half back, and a drag still scrolls.

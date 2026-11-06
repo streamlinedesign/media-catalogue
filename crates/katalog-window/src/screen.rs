@@ -313,6 +313,53 @@ impl App {
                 ));
             }
         }
+        if !self.left_off.is_empty() {
+            side = side
+                .push(Space::with_height(32))
+                .push(row![label("Where you left off"), horizontal_space()])
+                .push(Space::with_height(8))
+                .push(rule())
+                .push(Space::with_height(8));
+            for l in self.left_off.iter().take(3) {
+                let episode = l.kind == "episode";
+                let mut what = l.title.clone();
+                if let Some(sub) = &l.subtitle {
+                    what.push_str(&format!(" · {sub}"));
+                }
+                let at = if l.position_ms == 0 {
+                    "next up".to_string()
+                } else if l.duration_ms > 0 {
+                    format!("{} of {}", fmt_ms(l.position_ms), fmt_ms(l.duration_ms))
+                } else {
+                    fmt_ms(l.position_ms)
+                };
+                let open = if episode {
+                    Message::OpenShow(l.open_id)
+                } else {
+                    Message::OpenMovie(l.open_id)
+                };
+                side = side.push(
+                    row![
+                        button(
+                            column![
+                                mono(what, 14.0, G).wrapping(text::Wrapping::None),
+                                mono(at, 11.0, DIM),
+                            ]
+                            .spacing(2)
+                        )
+                        .style(style::screen_link(G))
+                        .padding(0)
+                        .width(Length::Fill)
+                        .on_press(open),
+                        key("RESUME", false, Message::Watch(episode, l.id)),
+                        key("×", false, Message::ForgetLeftOff(episode, l.id)),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .padding([4, 0]),
+                );
+            }
+        }
         side = side
             .push(Space::with_height(32))
             .push(row![
