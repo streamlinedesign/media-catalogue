@@ -2,14 +2,13 @@
 
 ## Now
 
+- A page in katalogd for the phone on the Wi-Fi: music, films, shows, book downloads, behind a password
 - Delete the merged branches `comics-blue`, `fetch-command`, `katalogd`, `lyrics-matching`, `playback`
 
 ## Next
 
-- Adopt the Streamline design system (design-system@v0.2.0) in place of Satoshi and the hand-written `web/index.css`
-- Decide the fate of the Go web catalogue: keep, fold into katalogd, or remove (then `release.yml` and `make dist` go with it)
-- Tests: the Go side has none; the Rust side only covers title and artist cleaning in `katalog-core/src/fetch.rs`
-- Tag `v0.1.0` so `release.yml` publishes the first binaries
+- Adopt the Streamline design system (design-system@v0.2.0) in the window in place of Satoshi, navy and cream
+- Tag a version so `release.yml` publishes the first binaries
 
 - Window polish: numbers on one baseline, a right-click menu on tracks and
   albums
@@ -24,6 +23,7 @@
 
 ## Done
 
+- 0.16.1: the Go web catalogue removed; release.yml builds the Rust binaries
 - 0.16.0: genre playlists; wind and pause a film
 - 0.15.1: where you left off for films and shows
 - 0.15.0: search inside a book

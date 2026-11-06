@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- The earlier Go web catalogue is gone: `*.go`, `web/`, `seed.json` and
+  `docs/web-catalogue.md`. `make dev` now runs katalogd from source on
+  127.0.0.1:4180, `make test`, `build` and `lint` are Rust only,
+  `db-reset` and `db-seed` say they are not used, and `make dist` packs
+  the three binaries. `release.yml` builds those on a `v*` tag. Go left
+  the Nix dev shell.
 - Genre playlists, made by themselves: after a scan, every genre with at
   least 8 tracks gets a playlist ("Rock; New Wave" counts for both), in
   artist and album order, refilled after each scan and dropped when the
