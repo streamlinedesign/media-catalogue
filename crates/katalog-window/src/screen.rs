@@ -133,6 +133,7 @@ impl App {
         );
         let line = match (&self.tv.on, now) {
             _ if !self.tv.power => String::new(),
+            _ if self.tv.note.is_some() => self.tv.note.clone().unwrap_or_default(),
             (On::Asked(t), _) => format!("playing · {t}"),
             (_, Some(s)) => {
                 let mut l = s.title.clone();

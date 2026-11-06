@@ -4,6 +4,17 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Playback no longer gets lost when the TV has the sound card. katalogd
+  used to freeze for two seconds per track waiting for it, then skip to
+  the next track or play through another device. Now it waits without
+  freezing, shows the track as playing so the window hands the card back,
+  and pauses with a note if the card stays busy. Radio off stops the
+  music. The window sends mpv its commands from a thread of its own, so
+  it no longer stalls on a slow or dead mpv. A film or channel that will
+  not start says why under the set (from mpv's log in
+  `~/.cache/katalog/tv.log`) and the set stops retrying for 30 seconds
+  instead of starting mpv over and over. mpv decodes on the graphics
+  card when it can.
 - The TV turns back on after TURN OFF, and the channel keys bring it back
   too. Its sound now reaches you: asking for sound retries until mpv is
   listening, AUDIO on a silent set turns sound on, and mpv plays on the

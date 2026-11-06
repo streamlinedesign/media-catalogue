@@ -464,6 +464,13 @@ impl App {
         if !self.tv.power || self.tv.standalone || self.tv.parent.is_none() {
             return Task::none();
         }
+        if self.tv.check_start() {
+            self.tv.on = tv::On::Nothing;
+            self.tv.place();
+        }
+        if self.tv.held() {
+            return Task::none();
+        }
         let visible = self.tab == Tab::Screen || self.tv.full;
         let playing = self.tv.playing();
         match self.tv.on.clone() {
@@ -711,10 +718,9 @@ impl App {
         let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
             .iter()
             .any(|h| self.client.base.starts_with(h));
-        self.tv.audio_device = (local
-            && !self.player.device.is_empty()
-            && self.player.device != "default")
-            .then(|| self.player.device.clone());
+        self.tv.audio_device =
+            (local && !self.player.device.is_empty() && self.player.device != "default")
+                .then(|| self.player.device.clone());
         // Music started while the set had sound: the card goes back to it.
         if self.tv.sound && self.player.state == PlayState::Playing {
             self.tv.set_sound(false);
@@ -1336,6 +1342,7 @@ impl App {
                 Task::perform(async move { c.get(&path).await }, Message::Watching)
             }
             Message::Watching(Ok(w)) if !self.tv.standalone && self.tv.parent.is_some() => {
+                self.tv.hold_until = None;
                 // On the set, with sound; a click makes it fullscreen.
                 let args = w.args(&self.client.base);
                 self.tv.set_power(true);
@@ -1379,6 +1386,7 @@ impl App {
                 Task::none()
             }
             Message::Watching(Err(e)) => {
+                self.tv.note = Some(format!("the film did not start: {e}"));
                 self.error = Some(e);
                 Task::none()
             }
@@ -1453,8 +1461,11 @@ impl App {
                     Task::none()
                 }
             }
-            Message::TvTuned(_, Err(_)) => {
-                // Nothing on (no films with a known length yet): stay dark.
+            Message::TvTuned(_, Err(e)) => {
+                // Nothing on (no films with a known length yet): stay dark,
+                // and say so.
+                self.tv.note = Some(format!("nothing on this channel: {e}"));
+                self.tv.hold_until = Some(std::time::Instant::now() + Duration::from_secs(30));
                 self.tv.stop();
                 self.tv.place();
                 Task::none()
