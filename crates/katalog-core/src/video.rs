@@ -1074,6 +1074,26 @@ pub fn watch_target(
     Ok(Some((title, e.path, e.duration_ms)))
 }
 
+/// Notes a subtitle language found for a film (`table` "movies") or an
+/// episode ("episodes") without waiting for the next scan.
+pub fn add_sub_lang(conn: &Connection, table: &str, id: i64, lang: &str) -> Result<()> {
+    anyhow::ensure!(table == "movies" || table == "episodes", "no table {table}");
+    let subs: String = conn.query_row(
+        &format!("SELECT subs FROM {table} WHERE id = ?1"),
+        [id],
+        |r| r.get(0),
+    )?;
+    let mut langs: Vec<&str> = subs.split(',').filter(|s| !s.is_empty()).collect();
+    if !langs.contains(&lang) {
+        langs.push(lang);
+        conn.execute(
+            &format!("UPDATE {table} SET subs = ?2 WHERE id = ?1"),
+            params![id, langs.join(",")],
+        )?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- TMDB
 
 /// A film or show still without TMDB details.

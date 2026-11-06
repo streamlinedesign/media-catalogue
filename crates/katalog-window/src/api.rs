@@ -302,6 +302,21 @@ pub struct ShowWithEpisodes {
     pub episodes: Vec<Episode>,
 }
 
+/// A subtitle file on opensubtitles.com, from katalogd's search.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SubHit {
+    pub file_id: i64,
+    pub language: String,
+    #[serde(default)]
+    pub release: String,
+    #[serde(default)]
+    pub downloads: i64,
+    #[serde(default)]
+    pub exact: bool,
+    #[serde(default)]
+    pub hearing_impaired: bool,
+}
+
 /// A search hit from LRCLIB, with its text ready to save.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LyricsHit {
