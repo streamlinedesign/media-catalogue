@@ -18,6 +18,15 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
   `db-reset` and `db-seed` say they are not used, and `make dist` packs
   the three binaries. `release.yml` builds those on a `v*` tag. Go left
   the Nix dev shell.
+- Genre playlists, made by themselves: after a scan, every genre with at
+  least 8 tracks gets a playlist ("Rock; New Wave" counts for both), in
+  artist and album order, refilled after each scan and dropped when the
+  genre goes. They say "genre" beside their count and start off the radio
+  dial; switch one on in Settings to make it a station. A hand-made
+  playlist of the same name keeps it; the made one is "Rock (genre)".
+- Film controls: under the set, while a film or episode you asked for
+  plays, ← 10, Pause and 30 →. On Screen or fullscreen the arrow keys wind
+  10 seconds and space pauses the film instead of the music.
 - Where you left off, for films and shows, apart from the TV channels.
   While a film or episode you asked for plays, the window notes where it
   is every five seconds; Play and Resume start from there. Near the end

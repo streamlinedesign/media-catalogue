@@ -25,6 +25,7 @@
 
 - 0.17.0: the phone page on the Wi-Fi
 - 0.16.1: the Go web catalogue removed; release.yml builds the Rust binaries
+- 0.16.0: genre playlists; wind and pause a film
 - 0.15.1: where you left off for films and shows
 - 0.15.0: search inside a book
 - 0.14.3: page turn buttons in the reader

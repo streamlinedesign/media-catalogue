@@ -245,6 +245,10 @@ enum Message {
     LyricsQuery(String),
     /// Search LRCLIB for the playing track; `true` keeps the artist in.
     LyricsSearch(bool),
+    /// Back (negative) or on by seconds in the film asked for.
+    TvSeek(i32),
+    /// Pause or go on with the film asked for.
+    TvPauseToggle,
     /// Look for subtitles for a film (false) or an episode (true), or stop.
     SubsFind(bool, i64),
     SubsHits((bool, i64), Result<Vec<SubHit>, String>),
@@ -504,6 +508,11 @@ impl App {
         let task = Task::batch(tasks);
         let _ = client;
         (app, task)
+    }
+
+    /// Whether the film keys (space, arrows) go to a film asked for.
+    fn film_keys(&self) -> bool {
+        (self.tab == Tab::Screen || self.tv.full) && matches!(self.tv.on, tv::On::Asked(_))
     }
 
     fn load_left_off(&self) -> Task<Message> {
@@ -1835,7 +1844,20 @@ impl App {
                 self.tv.command(serde_json::json!(["cycle", "pause"]));
                 Task::none()
             }
+            // On Screen, with a film asked for, space is the film's.
+            Message::Toggle if self.film_keys() => Task::done(Message::TvPauseToggle),
             Message::Toggle => self.player_post("/api/player/toggle", None),
+            Message::TvSeek(secs) => {
+                if self.film_keys() {
+                    self.tv.seek(secs);
+                }
+                Task::none()
+            }
+            Message::TvPauseToggle => {
+                let p = !self.tv.paused;
+                self.tv.set_pause(p);
+                Task::none()
+            }
             Message::Volume(step) => {
                 // Steps land on multiples of five, so 100 comes back exactly
                 // and playback is bit-perfect again there.
@@ -2076,6 +2098,8 @@ impl App {
                     }
                     match key.as_ref() {
                         Key::Named(Named::Space) => Some(Message::Toggle),
+                        Key::Named(Named::ArrowLeft) => Some(Message::TvSeek(-10)),
+                        Key::Named(Named::ArrowRight) => Some(Message::TvSeek(10)),
                         Key::Named(Named::Escape) | Key::Named(Named::Backspace) => {
                             Some(Message::Back)
                         }
@@ -2597,18 +2621,7 @@ impl App {
                     .size(12)
                     .color(alpha(CREAM, 0.7)),
                 horizontal_space(),
-                text(format!(
-                    "{} {} · {}",
-                    p.track_count,
-                    if p.track_count == 1 {
-                        "track"
-                    } else {
-                        "tracks"
-                    },
-                    fmt_long(p.duration_ms)
-                ))
-                .size(13)
-                .color(alpha(CREAM, 0.8)),
+                text(p.meta()).size(13).color(alpha(CREAM, 0.8)),
             ]
             .align_y(Alignment::End);
             list = list.push(
@@ -2643,16 +2656,7 @@ impl App {
         };
         let p = &open.playlist;
         let on_air = self.player.radio.as_ref().map(|r| r.playlist) == Some(Some(p.id));
-        let meta = format!(
-            "{} {} · {}",
-            p.track_count,
-            if p.track_count == 1 {
-                "track"
-            } else {
-                "tracks"
-            },
-            fmt_long(p.duration_ms)
-        );
+        let meta = p.meta();
         let title = column![
             text(p.name.clone())
                 .size(if p.name.len() > 28 { 32 } else { 44 })
