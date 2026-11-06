@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.13.2: playback and the TV share the card without the daemon getting lost; radio off stops
 - 0.13.1: TV turns back on, TV sound works, lighter CRT
 - 0.13.0: four pages: Music, Screen, Catalogue, Settings
 - 0.12.1: the TV and the music share the sound card; TV off stays off; stronger CRT

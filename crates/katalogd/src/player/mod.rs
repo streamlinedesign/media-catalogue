@@ -203,6 +203,9 @@ struct Engine {
     last_started: Option<i64>,
     streak: u32,
     notice: Option<String>,
+    /// Since when the card has said busy (the TV has it): the track waits,
+    /// commands still answer, and after a while it pauses instead of skipping.
+    card_wait: Option<std::time::Instant>,
     meter: levels::Meter,
     /// Radio: where the last queued slot of the station ends, Unix ms.
     on_air_until: i64,
@@ -248,6 +251,7 @@ impl Engine {
             last_started: None,
             streak: 0,
             notice: None,
+            card_wait: None,
             meter,
             on_air_until: 0,
             hw: None,
@@ -261,7 +265,15 @@ impl Engine {
         self.read_hw();
         loop {
             let active = self.current.is_some() && !self.paused;
-            let cmd = if active {
+            let cmd = if active && self.card_wait.is_some() {
+                // Waiting for the card: try again in a moment, answering
+                // commands meanwhile.
+                match self.rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(c) => Some(c),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else if active {
                 match self.rx.try_recv() {
                     Ok(c) => Some(c),
                     Err(mpsc::TryRecvError::Empty) => None,
@@ -318,8 +330,14 @@ impl Engine {
                 self.tune_in()?;
             }
             Cmd::RadioOff => {
+                // Off is off: the station's song stops with it.
                 if self.radio.take().is_some() {
                     info!("radio off");
+                    self.finish_current(false);
+                    self.queue.clear();
+                    self.index = None;
+                    self.paused = false;
+                    self.close_sink();
                 }
             }
             Cmd::Add { tracks } => {
@@ -477,7 +495,14 @@ impl Engine {
         }
         let track = db::track(&self.conn, id)?.with_context(|| format!("track {id} is gone"))?;
         let decoder = Decoder::open(Path::new(&track.path))?;
-        self.ensure_sink(decoder.spec)?;
+        // An open card in the same format carries straight on (no gap); any
+        // other is let go, and pump opens the right one without blocking.
+        if self.sink.as_ref().is_some_and(|s| s.spec != decoder.spec) {
+            if let Some(s) = self.sink.as_mut() {
+                s.drain();
+            }
+            self.close_sink();
+        }
         let play_id = self.record_start(id)?;
         info!(
             "playing {} · {} ({})",
@@ -584,6 +609,12 @@ impl Engine {
 
     /// Decodes one block and hands it to the card. Steps to the next track at the end.
     fn pump(&mut self) -> Result<()> {
+        let Some(spec) = self.current.as_ref().map(|c| c.decoder.spec) else {
+            return Ok(());
+        };
+        if self.sink.as_ref().is_none_or(|s| s.spec != spec) && !self.open_sink(spec)? {
+            return Ok(());
+        }
         let Some(cur) = self.current.as_mut() else {
             return Ok(());
         };
@@ -612,7 +643,11 @@ impl Engine {
                         s.drain();
                     }
                     self.sink = None;
-                    self.ensure_sink(spec)?;
+                    if !self.open_sink(spec)? {
+                        // Rare: the format changed mid-file and the card is
+                        // busy. This bit is dropped.
+                        return Ok(());
+                    }
                 }
                 let sink = self.sink.as_mut().unwrap();
                 sink.write(&samples)?;
@@ -653,32 +688,51 @@ impl Engine {
         }
     }
 
-    fn ensure_sink(&mut self, spec: decode::Spec) -> Result<()> {
-        match &self.sink {
-            Some(s) if s.spec == spec => Ok(()),
-            _ => {
-                if let Some(s) = self.sink.as_mut() {
-                    s.drain();
-                }
-                self.sink = None;
-                let sink = match open_waiting(&self.device, spec) {
-                    Ok(s) => s,
-                    Err(e) if self.device != "default" => {
-                        warn!("{e:#}; falling back to the ALSA default device");
-                        Sink::open("default", spec)?
-                    }
-                    Err(e) => return Err(e),
-                };
-                self.sink = Some(sink);
-                self.paused_format = None;
-                self.meter.reset();
-                Ok(())
-            }
+    /// Opens the card for `spec`. False while it is busy (the TV has it):
+    /// the track waits without blocking the engine, and status says Playing
+    /// so the window hands the card back. After `CARD_WAIT` it pauses
+    /// with a notice instead of skipping through the queue.
+    fn open_sink(&mut self, spec: decode::Spec) -> Result<bool> {
+        if let Some(s) = self.sink.as_mut() {
+            s.drain();
         }
+        self.sink = None;
+        let sink = match Sink::open(&self.device, spec) {
+            Ok(s) => s,
+            Err(e) if is_busy(&e) => {
+                let since = *self.card_wait.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() < CARD_WAIT {
+                    self.notice = Some("waiting for the sound card".into());
+                } else {
+                    warn!("{e:#}; pausing until it is free");
+                    self.card_wait = None;
+                    self.paused = true;
+                    self.meter.reset();
+                    self.notice = Some(
+                        "the sound card is in use (the TV?): press play when it is free".into(),
+                    );
+                }
+                return Ok(false);
+            }
+            // A busy card is not a reason to play somewhere else.
+            Err(e) if self.device != "default" => {
+                warn!("{e:#}; falling back to the ALSA default device");
+                Sink::open("default", spec)?
+            }
+            Err(e) => return Err(e),
+        };
+        if self.card_wait.take().is_some() {
+            self.notice = None;
+        }
+        self.sink = Some(sink);
+        self.paused_format = None;
+        self.meter.reset();
+        Ok(true)
     }
 
     fn close_sink(&mut self) {
         self.sink = None;
+        self.card_wait = None;
         self.paused_format = None;
         self.meter.reset();
     }
@@ -688,6 +742,8 @@ impl Engine {
             return;
         }
         self.paused = paused;
+        // A wait for the card starts over from the next resume.
+        self.card_wait = None;
         if paused {
             self.meter.reset();
         }
@@ -836,15 +892,10 @@ fn mark_finished(conn: &Connection, play_id: i64) -> Result<()> {
 
 /// Opens the card, waiting a moment if something else has it: the window's
 /// TV lets go of it as soon as music is asked for.
-fn open_waiting(device: &str, spec: decode::Spec) -> Result<Sink> {
-    let mut tries = 0;
-    loop {
-        match Sink::open(device, spec) {
-            Err(e) if tries < 20 && format!("{e:#}").contains("busy") => {
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            r => return r,
-        }
-    }
+/// How long a track waits for a busy card before it pauses.
+const CARD_WAIT: Duration = Duration::from_secs(5);
+
+fn is_busy(e: &anyhow::Error) -> bool {
+    let m = format!("{e:#}").to_lowercase();
+    m.contains("busy") || m.contains("ebusy")
 }

@@ -120,6 +120,16 @@ pub struct Tv {
     pub standalone: bool,
     mpv: Option<Child>,
     socket: PathBuf,
+    /// Commands for mpv, sent from their own thread so the window never
+    /// waits on mpv's socket.
+    ipc: std::sync::mpsc::Sender<serde_json::Value>,
+    /// When mpv was last started, to tell a film that never got going.
+    started: Option<std::time::Instant>,
+    /// Why the set is dark, said under it, until something starts.
+    pub note: Option<String>,
+    /// After a failed start the set waits until then before trying again
+    /// by itself, instead of starting mpv over and over.
+    pub hold_until: Option<std::time::Instant>,
     pub channel: usize,
     pub on: On,
     pub power: bool,
@@ -143,13 +153,33 @@ impl Default for Tv {
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
+        let socket = dir.join(format!("katalog-tv-{}.sock", std::process::id()));
+        let (ipc, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+        let path = socket.clone();
+        std::thread::spawn(move || {
+            for cmd in rx {
+                // Just after a start mpv may not be listening yet: give it
+                // a moment, a second at most.
+                for _ in 0..20 {
+                    if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&path) {
+                        let _ = writeln!(s, "{}", serde_json::json!({ "command": cmd }));
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        });
         Self {
             parent: None,
             scale: 1.0,
             embed: None,
             standalone: std::env::var_os("DISPLAY").is_none(),
             mpv: None,
-            socket: dir.join(format!("katalog-tv-{}.sock", std::process::id())),
+            socket,
+            ipc,
+            started: None,
+            note: None,
+            hold_until: None,
             channel: 0,
             on: On::Nothing,
             power: std::env::var("KATALOG_TV")
@@ -256,10 +286,18 @@ impl Tv {
         cmd.arg(format!("--input-ipc-server={}", self.socket.display()))
             .arg("--keep-open=no")
             .arg("--idle=no")
+            // The graphics card decodes when it can: far less work for the
+            // processor than decoding a film in software.
+            .arg("--hwdec=auto-safe")
+            // No running status line in the log, only what mpv has to say.
+            .arg("--quiet")
             .args(args);
         if let Some(d) = &self.audio_device {
             // Through plughw, so mpv need not match the card's own format.
-            let d = d.strip_prefix("hw:").map(|r| format!("plughw:{r}")).unwrap_or(d.clone());
+            let d = d
+                .strip_prefix("hw:")
+                .map(|r| format!("plughw:{r}"))
+                .unwrap_or(d.clone());
             cmd.arg(format!("--audio-device=alsa/{d}"));
         }
         cmd
@@ -267,7 +305,14 @@ impl Tv {
             .arg(format!("--aid={}", if sound { "auto" } else { "no" }))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            // What mpv says goes to a file, so a film that won't start can
+            // say why.
+            .stderr(
+                std::fs::create_dir_all(log_dir())
+                    .and_then(|_| std::fs::File::create(log_path()))
+                    .map(Stdio::from)
+                    .unwrap_or_else(|_| Stdio::null()),
+            );
         // If Katalog dies without saying goodbye, mpv goes with it instead of
         // playing on in a window that no longer exists.
         unsafe {
@@ -281,26 +326,62 @@ impl Tv {
             .spawn()
             .map_err(|e| format!("could not start mpv: {e}"))?;
         self.mpv = Some(child);
+        self.started = Some(std::time::Instant::now());
+        self.note = None;
         self.sound = sound;
         self.on = on;
         self.place();
         Ok(())
     }
 
-    /// Sends mpv a command over its socket, if it is listening.
-    /// Sends mpv a command over its socket. Just after a start mpv may not
-    /// be listening yet, so it is given a moment (a second at most).
+    /// Sends mpv a command over its socket, without waiting for it.
     pub fn command(&self, cmd: serde_json::Value) {
-        if self.mpv.is_none() {
-            return;
+        if self.mpv.is_some() {
+            let _ = self.ipc.send(cmd);
         }
-        for _ in 0..20 {
-            if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&self.socket) {
-                let _ = writeln!(s, "{}", serde_json::json!({ "command": cmd }));
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    /// Whether mpv stopped within seconds of starting. Then the set says
+    /// why (from what mpv said) and holds off for a while before trying
+    /// again by itself.
+    pub fn check_start(&mut self) -> bool {
+        let quick = self.started.is_some_and(|t| t.elapsed().as_secs() < 5);
+        if !quick || self.playing() {
+            return false;
         }
+        self.started = None;
+        self.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        let said = std::fs::read_to_string(log_path()).unwrap_or_default();
+        let why = said
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with("Exiting"))
+            .unwrap_or("mpv stopped straight away")
+            .to_string();
+        let what = if matches!(self.on, On::Asked(_)) {
+            "the film"
+        } else {
+            "the channel"
+        };
+        let why: String = if why.chars().count() > 56 {
+            why.chars().take(55).chain(['…']).collect()
+        } else {
+            why
+        };
+        let log = log_path().display().to_string();
+        let log = match std::env::var("HOME") {
+            Ok(h) if log.starts_with(&h) => format!("~{}", &log[h.len()..]),
+            _ => log,
+        };
+        self.note = Some(format!("{what} did not start: {why} · {log}"));
+        true
+    }
+
+    /// Whether the set is waiting after a failed start.
+    pub fn held(&self) -> bool {
+        self.hold_until
+            .is_some_and(|t| std::time::Instant::now() < t)
     }
 
     pub fn set_pause(&self, on: bool) {
@@ -328,6 +409,8 @@ impl Tv {
         self.power = on;
         let marker = off_marker();
         if on {
+            // Asked for by hand: no more waiting after a failed start.
+            self.hold_until = None;
             let _ = std::fs::remove_file(marker);
         } else {
             if let Some(d) = marker.parent() {
@@ -344,6 +427,19 @@ impl Tv {
 }
 
 /// Left behind when the set is switched off, so it stays off.
+fn log_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("katalog")
+}
+
+/// What the set's mpv last said.
+pub fn log_path() -> PathBuf {
+    log_dir().join("tv.log")
+}
+
 fn off_marker() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
