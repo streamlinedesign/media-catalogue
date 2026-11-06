@@ -120,19 +120,17 @@ run it, and what is still open. No marketing language.
 
 ## This project
 
-**media-catalogue** is Katalog, a personal media library. Two programs share
-the repo: the Rust workspace in `crates/` (`katalog-core`, the `katalogd`
-daemon with symphonia/ALSA playback and LRCLIB lyrics, the `katalog` CLI) is
-the live project; the earlier Go web catalogue (`*.go`, `web/`, `seed.json`,
-one SQLite file) is described in `docs/web-catalogue.md`.
+**media-catalogue** is Katalog, a personal media library: the Rust workspace
+in `crates/` (`katalog-core`, the `katalogd` daemon with symphonia/ALSA
+playback and LRCLIB lyrics, the `katalog` CLI, the iced `katalog-window`).
 
-- Ports: Go catalogue `4180` (`PORT`); `4181` reserved. `katalogd` keeps its
-  own `--bind` / `KATALOG_BIND` (`127.0.0.1:7300`) and runs as a user service.
-- `make dev` runs the Go catalogue, `make daemon` runs katalogd from source.
-  `make build` needs Go 1.24+, Rust 1.85+ and `libasound2-dev pkg-config`,
-  or `nix develop` from `flake.nix`.
-- `db-reset` deletes `katalog.db`; `db-seed` imports `seed.json` via
-  `katalog import`. katalogd's own SQLite file is not touched.
-- Unusual: Go and Rust in one repo, a Nix flake that builds only the Rust
-  side, and `release.yml` building the Go binaries on a `v*` tag.
-- Open question: keep, fold into katalogd, or remove the Go catalogue.
+- Ports: `4180` (`PORT`) is where `make dev` runs katalogd; `4181` reserved.
+  The installed katalogd keeps its own `--bind` / `KATALOG_BIND`
+  (`127.0.0.1:7300`) and runs as a user service (`make install`).
+- `make dev` and `make daemon` run katalogd from source. `make build` needs
+  Rust 1.85+ and `libasound2-dev pkg-config`, or `nix develop` from
+  `flake.nix`.
+- `db-reset` and `db-seed` are not used: katalogd's SQLite file follows the
+  library on disk.
+- `release.yml` builds the three Linux binaries on a `v*` tag (`make dist`).
+- The earlier Go web catalogue was removed in 0.16.1.

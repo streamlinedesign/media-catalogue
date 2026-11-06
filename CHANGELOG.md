@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- The earlier Go web catalogue is gone: `*.go`, `web/`, `seed.json` and
+  `docs/web-catalogue.md`. `make dev` now runs katalogd from source on
+  127.0.0.1:4180, `make test`, `build` and `lint` are Rust only,
+  `db-reset` and `db-seed` say they are not used, and `make dist` packs
+  the three binaries. `release.yml` builds those on a `v*` tag. Go left
+  the Nix dev shell.
 - Where you left off, for films and shows, apart from the TV channels.
   While a film or episode you asked for plays, the window notes where it
   is every five seconds; Play and Resume start from there. Near the end

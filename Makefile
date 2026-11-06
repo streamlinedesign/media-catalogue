@@ -2,29 +2,26 @@ SHELL := bash
 .DEFAULT_GOAL := help
 
 # ---- Project ----------------------------------------------------------------
-# media-catalogue: the Rust music daemon katalogd and katalog CLI (crates/),
-# plus the earlier Go web catalogue (*.go, web/). Ports from PORTS.md in
-# streamlinedesign/template; .env overrides. PORT is the Go catalogue; the Rust
-# daemon has its own --bind (KATALOG_BIND).
+# media-catalogue: katalogd, the katalog CLI and katalog-window (crates/).
+# Ports from PORTS.md in streamlinedesign/template; .env overrides. PORT is
+# where `make dev` runs katalogd; the installed service keeps its own --bind
+# (KATALOG_BIND, 127.0.0.1:7300).
 NAME     ?= katalog
 PORT     ?= 4180
 DROPLET  ?=
-DB       ?= katalog.db
 # -----------------------------------------------------------------------------
 
 -include .env
 export
 
 VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
-LDFLAGS := -s -w
-PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
-dev: ## Go catalogue on PORT (open http://localhost:4180)
-	@echo "On your phone: http://$$(hostname -I 2>/dev/null | cut -d' ' -f1 || ipconfig getifaddr en0):$(PORT)"
-	go run . serve -db $(DB) -addr 0.0.0.0:$(PORT)
+dev: ## katalogd from source on 127.0.0.1:PORT (4180), beside the installed service
+	@echo "katalogd on http://127.0.0.1:$(PORT)"
+	cargo run -p katalogd -- --bind 127.0.0.1:$(PORT) $(ARGS)
 
 daemon: ## Run katalogd from source (scans ~/Library/Music, serves 127.0.0.1:7300)
 	cargo run -p katalogd -- $(ARGS)
@@ -44,49 +41,32 @@ uninstall: ## Stop the user service and remove the binaries
 	rm -f $(HOME)/.config/systemd/user/katalogd.service $(HOME)/.local/bin/katalogd $(HOME)/.local/bin/katalog $(HOME)/.local/bin/katalog-window
 	systemctl --user daemon-reload
 
-test: ## Go vet and tests, cargo tests
-	go vet ./... && go test ./...
+test: ## cargo tests for the whole workspace
 	cargo test --workspace
 
-build: ## ./katalog (Go) and target/release/katalogd + katalog (Rust)
-	$(MAKE) katalog
+build: ## target/release/katalogd, katalog and katalog-window
 	cargo build --release --workspace
 
-katalog: ## The Go web catalogue binary for this machine
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o katalog .
-
-dist: ## Go catalogue binaries for Linux, macOS and Windows into dist/
+dist: build ## The three binaries for this machine in dist/katalog-VERSION-linux-ARCH.tar.gz
 	@mkdir -p dist
-	@for p in $(PLATFORMS); do \
-	  os=$${p%/*}; arch=$${p#*/}; ext=; [ $$os = windows ] && ext=.exe; \
-	  echo "building dist/katalog-$$os-$$arch$$ext"; \
-	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o dist/katalog-$$os-$$arch$$ext . || exit 1; \
-	done
+	tar -czf dist/katalog-$(VERSION)-linux-$$(uname -m).tar.gz -C target/release katalogd katalog katalog-window
+	@ls dist
 
-run: katalog ## Build and run ./katalog serve on PORT
-	./katalog serve -db $(DB)
-
-lint: ## gofmt, go vet, cargo fmt, clippy
-	gofmt -l -w $$(git ls-files '*.go')
-	go vet ./...
+lint: ## cargo fmt, clippy
 	cargo fmt --all
 	cargo clippy --workspace
 
-# The Go catalogue is one SQLite file. It is created, with the sample titles
-# from seed.json, the first time `katalog serve` opens it.
-db-reset: ## Delete the local katalog.db; the next serve recreates it with sample titles
-	rm -f $(DB) $(DB)-wal $(DB)-shm
-	@echo "removed $(DB); 'make dev' or 'make run' recreates it with the sample titles"
+db-reset: ## Not used: katalogd's database follows the library
+	@echo "make $@: not used in this project (katalogd keeps ~/.local/share/katalog/katalog.db and rescans on start)"
 
-db-seed: ## Import seed.json into katalog.db (titles with the same id are updated)
-	$(MAKE) katalog
-	./katalog import -db $(DB) seed.json
+db-seed: ## Not used: katalogd reads your own library
+	@echo "make $@: not used in this project (point KATALOG_LIBRARY at a folder of music and films)"
 
 psql: ## Shell on the local database
-	@echo "make $@: not used in this project (SQLite; try: sqlite3 $(DB))"
+	@echo "make $@: not used in this project (SQLite)"
 
 deploy: ## Build for linux/amd64 and ship to DROPLET
-	@echo "make $@: not used in this project (katalogd is a user service; the catalogue publishes with 'katalog export')"
+	@echo "make $@: not used in this project (katalogd is a user service: make install)"
 
 release: ## Tag VERSION, move Unreleased in CHANGELOG.md, push the tag
 	@test "$$(git branch --show-current)" = main || { echo "release from main only"; exit 1; }
@@ -105,8 +85,8 @@ configure-repo: ## One-time GitHub settings: auto-merge, Actions may open PRs, m
 	gh label create hold --color B60205 --description "Do not auto-merge" --force >/dev/null; \
 	echo "$$repo configured"
 
-clean: ## Remove build output, the exported site and the local database
-	rm -rf katalog dist site .dev-server $(DB) $(DB)-wal $(DB)-shm
+clean: ## Remove build output
+	rm -rf dist
 	cargo clean
 
-.PHONY: help dev daemon install uninstall test build katalog dist run lint db-reset db-seed psql deploy release configure-repo clean
+.PHONY: help dev daemon install uninstall test build dist lint db-reset db-seed psql deploy release configure-repo clean

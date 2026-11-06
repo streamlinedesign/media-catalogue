@@ -14,7 +14,6 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          # The Go web catalogue is not part of this build.
           nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
           buildInputs = [ pkgs.alsa-lib ];
           # The window loads these at run time (winit and wgpu dlopen them).
@@ -32,7 +31,7 @@
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cargo rustc rust-analyzer clippy rustfmt pkg-config alsa-lib libxkbcommon wayland xorg.libX11 vulkan-loader libGL go ffmpeg ];
+          packages = with pkgs; [ cargo rustc rust-analyzer clippy rustfmt pkg-config alsa-lib libxkbcommon wayland xorg.libX11 vulkan-loader libGL ffmpeg ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ libxkbcommon wayland xorg.libX11 vulkan-loader libGL ]);
         };
       });

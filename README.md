@@ -8,7 +8,6 @@ use it: the desktop window (coming), the `katalog` command line, xmobar, or a ph
 the same network. One real system instead of a daemon and a pile of half-clients.
 
 The plan, the design decisions and the milestones are in the project's plan document.
-The older web catalogue (Go, static page) lives on in [docs/web-catalogue.md](docs/web-catalogue.md).
 
 ## Run it
 
@@ -393,7 +392,6 @@ All answers are JSON except `/art` and `/stream`. CORS is open, so a web view ca
     crates/katalog-window the desktop window (iced)
     flake.nix             dev shell, package, and a user service for NixOS or home-manager
     deploy/               the systemd user unit that make install puts in place
-    web/, *.go            the earlier web catalogue, see docs/web-catalogue.md
 
 ## Database
 
