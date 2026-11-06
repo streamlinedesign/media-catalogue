@@ -904,6 +904,63 @@ pub fn comic_page(path: &Path, format: &str, name: &str) -> Result<Vec<u8>> {
     }
 }
 
+/// A CBR that is a real RAR: its pages come out through bsdtar or unrar,
+/// which (in a solid archive) unpacks everything before each page. Such a
+/// comic is better unpacked once, with `unpack_comic`.
+pub fn needs_unpacking(path: &Path, format: &str) -> bool {
+    format == "cbr" && zip_open(path).is_err()
+}
+
+/// Unpacks a whole comic into `dest`, by way of a `.part` folder so a half
+/// done unpack is never taken for a whole one.
+pub fn unpack_comic(path: &Path, dest: &Path) -> Result<()> {
+    let part = dest.with_extension("part");
+    let _ = std::fs::remove_dir_all(&part);
+    std::fs::create_dir_all(&part)?;
+    let st = if has("bsdtar") {
+        Command::new("bsdtar")
+            .arg("-xf")
+            .arg(path)
+            .arg("-C")
+            .arg(&part)
+            .stderr(std::process::Stdio::null())
+            .status()?
+    } else if has("unrar") {
+        Command::new("unrar")
+            .args(["x", "-inul", "-p-", "-o+"])
+            .arg(path)
+            .arg(format!("{}/", part.display()))
+            .status()?
+    } else {
+        bail!("a CBR needs bsdtar (libarchive) or unrar")
+    };
+    if !st.success() {
+        let _ = std::fs::remove_dir_all(&part);
+        bail!("could not unpack {}", path.display());
+    }
+    let _ = std::fs::remove_dir_all(dest);
+    std::fs::rename(&part, dest)?;
+    Ok(())
+}
+
+/// The pages in an unpacked comic, as paths relative to it, in reading order.
+pub fn unpacked_pages(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(dir)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        })
+        .filter(|n| is_image_name(n))
+        .collect();
+    names.sort_by(|a, b| natural_cmp(a, b));
+    names
+}
+
 // ---------------------------------------------------------------- PDF
 
 #[derive(Debug, Default, Clone)]

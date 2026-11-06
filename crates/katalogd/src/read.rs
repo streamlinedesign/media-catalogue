@@ -215,6 +215,41 @@ fn cache_dir() -> PathBuf {
         .join("katalog/pages")
 }
 
+/// One unpack at a time: the pages asked for while a comic unpacks wait
+/// for it rather than each unpacking it again.
+static UNPACK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How many unpacked comics to keep around.
+const UNPACKED_KEPT: usize = 4;
+
+/// The folder a RAR comic is unpacked in, unpacking it the first time.
+fn unpacked(book: &Book, stamp: u64) -> anyhow::Result<PathBuf> {
+    let root = cache_dir().with_file_name("unpacked");
+    let dir = root.join(format!("{}-{stamp}", book.id));
+    if dir.is_dir() {
+        return Ok(dir);
+    }
+    let _one = UNPACK.lock().unwrap_or_else(|e| e.into_inner());
+    if dir.is_dir() {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&root)?;
+    books::unpack_comic(std::path::Path::new(&book.path), &dir)?;
+    // Keep the last few; the drawn pages stay in the page cache anyway.
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        let mut all: Vec<(std::time::SystemTime, PathBuf)> = rd
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir() && e.path() != dir)
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        all.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, old) in all.into_iter().skip(UNPACKED_KEPT - 1) {
+            let _ = std::fs::remove_dir_all(old);
+        }
+    }
+    Ok(dir)
+}
+
 /// Draws one page: a PDF page through pdftoppm, a comic page from its
 /// archive. Drawn pages are kept in ~/.cache/katalog/pages, so turning back
 /// is instant.
@@ -240,6 +275,13 @@ fn render(book: &Book, n: i64, w: u32, dark: bool) -> anyhow::Result<(String, Ve
     let path = std::path::Path::new(&book.path);
     let raw = if pdf {
         books::pdf_page(path, n, w)?
+    } else if books::needs_unpacking(path, &book.format) {
+        let dir = unpacked(book, stamp)?;
+        let pages = books::unpacked_pages(&dir);
+        let name = pages
+            .get(n as usize)
+            .ok_or_else(|| anyhow::anyhow!("no page {}", n + 1))?;
+        std::fs::read(dir.join(name))?
     } else {
         let pages = books::comic_pages(path, &book.format)?;
         let name = pages
@@ -249,7 +291,12 @@ fn render(book: &Book, n: i64, w: u32, dark: bool) -> anyhow::Result<(String, Ve
     };
     let mut img = image::load_from_memory(&raw)?;
     if !pdf && img.width() > w {
-        img = img.resize(w, u32::MAX, image::imageops::FilterType::Triangle);
+        // Small pages for the strip take the quick way down.
+        img = if w <= 400 {
+            img.thumbnail(w, u32::MAX)
+        } else {
+            img.resize(w, u32::MAX, image::imageops::FilterType::Triangle)
+        };
     }
     let mut rgba = img.to_rgba8();
     if dark {

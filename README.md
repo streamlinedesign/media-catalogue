@@ -258,15 +258,22 @@ The window's reader takes all three kinds:
   left them. To highlight, click the first word, then the last, then pick a colour (`1` `2`
   `3`); `n` adds a note, `y` copies. A note sits in the margin beside its paragraph.
 - **PDF** shows the page itself, dark or paper, fit to width, to the page, or two pages side
-  by side. Drag over the words to highlight them.
+  by side. Drag over the words to highlight them; a click or tap elsewhere turns the page by
+  the half of the window it lands in.
 - **Comics** turn a page at a time, or two side by side with the cover alone; right to left
-  for manga. `f` hides the bar.
+  for manga. A click or tap on the right half goes on, the left half back (the other way round
+  right to left); the top edge of the page, or `f`, hides and shows the bar. A CBR that is a
+  real RAR is unpacked once into `~/.cache/katalog/unpacked` (the last four are kept), and
+  each page shows small at once while the full one is drawn.
 
 `b` bookmarks the page (as many as you like, each with a name), `m` opens the marks: bookmarks,
 highlights and notes, with a copy of them all as Markdown. `r` rotates the screen for a
-foldable or a tablet held upright (through `xrandr` on X11; elsewhere, or with "page only" in
-Settings, only the page turns), and the screen goes back when the book closes. `←` `→`,
-Space and PageUp/PageDown turn pages, the box in the bar goes to a page, `t` opens the
+foldable or a tablet held upright (through `xrandr` on X11, with the touchscreen and pen
+mapped to follow through `xinput`; elsewhere, or with "page only" in Settings, only the page
+turns). Turned, the bar has Turn back and Other way, `r` turns back, and the screen also
+goes back when the book closes or the window quits. `←` `→`, Space and PageUp/PageDown turn
+pages; `↓` `↑` (or `j` `k`) scroll a chapter or a page shown to its width, and go on to the
+next chapter at the end of one; the box in the bar goes to a page, `t` opens the
 contents, `d` switches dark and paper, `+` `-` set the size, Esc closes the book. Reader
 settings are kept in `~/.config/katalog/reader.json`.
 

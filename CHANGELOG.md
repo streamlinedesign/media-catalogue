@@ -4,6 +4,14 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Reader fixes. Rotate now has a way back: Turn back and Other way in
+  the bar, `r` to turn back, and the screen comes back when the window
+  quits; the touchscreen and pen are mapped to the turned screen so taps
+  land where the finger is. A click or tap on the right half of a page
+  turns on, the left half back, with touch as well as the mouse. Up and
+  down scroll a book instead of turning it. Big RAR comics open much
+  faster: katalogd unpacks one once instead of for every page, and each
+  page shows small at once while the full one loads.
 - Books and comics in katalogd: it reads `Books/` (EPUB, PDF) and
   `Comics/` (CBR, CBZ, PDF, folders of pages) next to `Music/`, with
   titles, authors, series, issue numbers and covers. It serves EPUB
