@@ -9,3 +9,7 @@ IBM Plex Mono (Light, Regular, Medium), for the Home screen, from the
 `@ibm/plex-mono` 2.5.0 package under the SIL Open Font License 1.1
 (`IBMPlexMono-OFL.txt`). Converted from WOFF to TTF with the same name-table
 treatment: family "IBM Plex Mono", the weight as the subfamily.
+
+Literata (Regular, Italic, SemiBold, SemiBold Italic), the reading face for
+books, by TypeTogether for Google, from the `@expo-google-fonts/literata`
+0.4.3 package under the SIL Open Font License 1.1 (`Literata-OFL.txt`).

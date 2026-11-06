@@ -9,8 +9,15 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
   titles, authors, series, issue numbers and covers. It serves EPUB
   chapters as paragraphs, PDF and comic pages as images (dark pages on
   request), the words on a PDF page with their boxes, and keeps where
-  you are, bookmarks, and highlights with notes. The window's reader
-  comes next.
+  you are, bookmarks, and highlights with notes.
+- The window reads them: a Read page with what you are reading, your
+  highlights and the comics on the pile, and a reader for EPUB (set in
+  Literata, with size, line height and width of your choosing), PDF (dark
+  pages, fit width, fit page, two pages) and comics (spreads, right to
+  left). Highlights in three colours with notes, as many bookmarks as you
+  like, a marks panel that copies them all as Markdown, and a rotate key
+  that turns the screen for a foldable. Books and comics also have their
+  own sections in the catalogue.
 - Lyrics can be removed: Remove beside the lyrics takes them away and
   goes back to the search, to pick better ones or leave the song without.
   Removed lyrics stay away: the online lookup skips the song and a rescan

@@ -36,17 +36,19 @@ Nothing is looked up online until you ask: `katalog fetch lyrics` when the wifi 
 
     ./target/release/katalog-window     # or KATALOG_URL=http://host:7300 katalog-window
 
-One window, drawn by [iced](https://iced.rs) (no GTK, no web view), with four pages:
+One window, drawn by [iced](https://iced.rs) (no GTK, no web view), with five pages:
 
 - **Music**, the first screen, the home for music (below).
 - **Screen**, the home for films and shows: the television big, with its keys and a guide
   to the three channels, tonight's film, and what is new.
-- **Catalogue**: albums, films and shows on one page, each section on its own colour (navy,
+- **Read**, the home for books and comics: what you are reading, your latest highlights,
+  and the comics on the pile. A book opens in the reader (below).
+- **Catalogue**: albums, films, shows, books and comics on one page, each section on its own colour (navy,
   black, wine), with an index on the left that stays put. Typing searches all three. Each
   album, film and show has its own page.
-- **Settings**: one page for music (playlists, the queue, the library, the CRT) and one for
-  films and shows (folders, subtitles, posters, the set and its channels), in the same
-  colours.
+- **Settings**: one page for music (playlists, the queue, the library, the CRT), one for
+  films and shows (folders, subtitles, posters, the set and its channels), and one for
+  reading, in the same colours.
 
 The catalogue and settings are in the Kaptol design: Satoshi, navy and cream, headings on
 rules, numbers pinned to the right, a black card for what is playing. Lyrics follow the song
@@ -239,6 +241,27 @@ database. A book that moves to another folder keeps them.
 Dark pages swap the paper and the type: white paper becomes the near-black page, black type
 becomes the cream, greys fall between. Strongly coloured pixels, a photo or a map, keep their
 colours and only lose some brightness.
+
+#### The reader
+
+The window's reader takes all three kinds:
+
+- **EPUB** is set in Literata, a typeface made for long reading on screens, on paper or on a
+  dark page. Font size, line height and column width are in Settings → Read and stay as you
+  left them. To highlight, click the first word, then the last, then pick a colour (`1` `2`
+  `3`); `n` adds a note, `y` copies. A note sits in the margin beside its paragraph.
+- **PDF** shows the page itself, dark or paper, fit to width, to the page, or two pages side
+  by side. Drag over the words to highlight them.
+- **Comics** turn a page at a time, or two side by side with the cover alone; right to left
+  for manga. `f` hides the bar.
+
+`b` bookmarks the page (as many as you like, each with a name), `m` opens the marks: bookmarks,
+highlights and notes, with a copy of them all as Markdown. `r` rotates the screen for a
+foldable or a tablet held upright (through `xrandr` on X11; elsewhere, or with "page only" in
+Settings, only the page turns), and the screen goes back when the book closes. `←` `→`,
+Space and PageUp/PageDown turn pages, the box in the bar goes to a page, `t` opens the
+contents, `d` switches dark and paper, `+` `-` set the size, Esc closes the book. Reader
+settings are kept in `~/.config/katalog/reader.json`.
 
     GET  /api/books?kind=book|comic&q=   q also finds words in highlights and notes
     GET  /api/books/home                 what you are reading and the latest highlights

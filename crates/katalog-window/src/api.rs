@@ -434,6 +434,33 @@ impl Client {
         self.send(reqwest::Method::PUT, path, Some(body)).await
     }
 
+    /// A request whose answer has no body (204).
+    pub async fn send_ok(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> ApiResult<()> {
+        let mut req = self.http.request(method, self.url(path));
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let res = req
+            .send()
+            .await
+            .map_err(|_| format!("katalogd is not running at {}", self.base))?;
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body: serde_json::Value = res.json().await.unwrap_or_default();
+            Err(body["error"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| status.to_string()))
+        }
+    }
+
     async fn send<T: serde::de::DeserializeOwned>(
         &self,
         method: reqwest::Method,

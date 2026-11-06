@@ -14,6 +14,7 @@ mod catalogue;
 mod crt;
 mod home;
 mod icons;
+mod reader;
 mod screen;
 mod style;
 mod tv;
@@ -58,6 +59,10 @@ fn main() -> iced::Result {
         .font(style::PLEX_LIGHT)
         .font(style::PLEX_REGULAR)
         .font(style::PLEX_MEDIUM)
+        .font(style::LITERATA_REGULAR)
+        .font(style::LITERATA_ITALIC)
+        .font(style::LITERATA_SEMIBOLD)
+        .font(style::LITERATA_SEMIBOLD_ITALIC)
         .default_font(MEDIUM)
         .antialiasing(true)
         .window_size(Size::new(1440.0, 900.0))
@@ -82,6 +87,8 @@ enum Tab {
     Screen,
     /// Albums, films and shows on one page, and their own pages.
     Catalogue,
+    /// The home for books and comics, and the reader.
+    Read,
     Settings,
     /// The whole lyrics of the playing song, and the search for them.
     Lyrics,
@@ -92,6 +99,7 @@ enum Tab {
 pub(crate) enum SettingsPage {
     Music,
     Screen,
+    Read,
 }
 
 /// A section of the catalogue, for its index.
@@ -100,6 +108,8 @@ pub(crate) enum Section {
     Albums,
     Films,
     Shows,
+    Books,
+    Comics,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +195,8 @@ struct App {
     channels: Vec<Channel>,
     /// When the set went fullscreen, so the click that did it does not undo it.
     tv_full_at: Option<std::time::Instant>,
+    /// Books and comics: the shelf and the reader.
+    read: reader::Reader,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +306,8 @@ enum Message {
     TonightNext,
     /// "sub" or "audio": the next subtitle or sound track.
     TvCycle(&'static str),
+    /// Books, comics and the reader.
+    Read(reader::Msg),
 }
 
 impl App {
@@ -360,6 +374,7 @@ impl App {
             tv: tv::Tv::default(),
             channels: Vec::new(),
             tv_full_at: None,
+            read: reader::Reader::default(),
         };
         let mut tasks = vec![
             app.load_status(),
@@ -369,6 +384,7 @@ impl App {
             app.load_playlists(),
             app.load_video(),
             app.load_channels(),
+            app.read.load(&client).map(Message::Read),
             window::get_oldest().then(|id| match id {
                 Some(id) => Task::batch([
                     window::get_raw_id::<Message>(id).map(Message::Xid),
@@ -381,7 +397,7 @@ impl App {
         // For screenshots in development:
         // KATALOG_DEBUG_VIEW=album:3 | play:3 | playlist:1 | adding:5 | queue | lyrics | artists | playlists | fake
         if let Ok(v) = std::env::var("KATALOG_DEBUG_VIEW") {
-            for part in v.split(',') {
+            for (step, part) in v.split(',').enumerate() {
                 let msg = match part.split_once(':') {
                     Some(("album", id)) => id.parse().ok().map(Message::OpenAlbum),
                     Some(("play", id)) => id.parse().ok().map(|id| Message::PlayAlbum(id, 0)),
@@ -390,6 +406,7 @@ impl App {
                     Some(("movie", id)) => id.parse().ok().map(Message::OpenMovie),
                     Some(("show", id)) => id.parse().ok().map(Message::OpenShow),
                     Some(("watch", id)) => id.parse().ok().map(|id| Message::Watch(false, id)),
+                    Some(("book", id)) => id.parse().ok().map(|id| Message::Read(reader::Msg::Open(id))),
                     _ => match part {
                         "playlists" => Some(Message::Settings(SettingsPage::Music)),
                         "home" | "music" => Some(Message::Tab(Tab::Music)),
@@ -397,6 +414,12 @@ impl App {
                         "screen" => Some(Message::Tab(Tab::Screen)),
                         "settings" => Some(Message::Settings(SettingsPage::Music)),
                         "screen-settings" => Some(Message::Settings(SettingsPage::Screen)),
+                        "read" => Some(Message::Tab(Tab::Read)),
+                        "read-settings" => Some(Message::Settings(SettingsPage::Read)),
+                        "books" => Some(Message::JumpTo(Section::Books)),
+                        "comics" => Some(Message::JumpTo(Section::Comics)),
+                        "marks" => Some(Message::Read(reader::Msg::Side(reader::Side::Marks))),
+                        "next" => Some(Message::Read(reader::Msg::Next)),
                         "films" => Some(Message::JumpTo(Section::Films)),
                         "shows" => Some(Message::JumpTo(Section::Shows)),
                         "foryou" => Some(Message::Side(home::Side::ForYou)),
@@ -435,7 +458,18 @@ impl App {
                     },
                 };
                 if let Some(m) = msg {
-                    tasks.push(Task::done(m));
+                    // Steps after a book opens wait for it to load.
+                    if matches!(part, "next" | "marks") {
+                        let wait = 2500 + 300 * step as u64;
+                        tasks.push(Task::perform(
+                            async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(wait)).await
+                            },
+                            move |_| m.clone(),
+                        ));
+                    } else {
+                        tasks.push(Task::done(m));
+                    }
                 }
             }
         }
@@ -1265,8 +1299,15 @@ impl App {
                     Tab::Settings => Task::batch([self.load_playlists(), self.load_queue()]),
                     Tab::Catalogue => Task::batch([self.load_posters(), self.load_visible_art()]),
                     Tab::Screen => self.load_posters(),
+                    Tab::Read => self.read.load(&self.client).map(Message::Read),
                     _ => Task::none(),
                 }
+            }
+            Message::Read(m) => {
+                if let reader::Msg::Open(_) = m {
+                    self.tab = Tab::Read;
+                }
+                self.read.update(m, &self.client).map(Message::Read)
             }
             Message::Settings(page) => {
                 self.settings = page;
@@ -1296,7 +1337,12 @@ impl App {
                     Ok(v) => summary(&v),
                     Err(e) => e,
                 });
-                Task::batch([self.load_status(), self.load_albums(), self.load_video()])
+                Task::batch([
+                    self.load_status(),
+                    self.load_albums(),
+                    self.load_video(),
+                    self.read.load(&self.client).map(Message::Read),
+                ])
             }
             Message::JumpTo(section) => {
                 self.tab = Tab::Catalogue;
@@ -1427,6 +1473,7 @@ impl App {
                 self.tv_follow()
             }
             Message::Scale(s) => {
+                self.read.scale = s;
                 self.tv.scale = s;
                 self.tv.place();
                 Task::none()
@@ -1545,6 +1592,19 @@ impl App {
                 Task::none()
             }
             Message::Back if self.tv.full => self.tv_fullscreen(false),
+            Message::Back if self.tab == Tab::Read && self.read.open.is_some() => {
+                let busy = self
+                    .read
+                    .open
+                    .as_ref()
+                    .is_some_and(|o| o.sel.is_some() || o.editing.is_some());
+                let m = if busy {
+                    reader::Msg::Cancel
+                } else {
+                    reader::Msg::Close
+                };
+                self.read.update(m, &self.client).map(Message::Read)
+            }
             Message::Back => {
                 if self.adding.is_some() {
                     self.adding = None;
@@ -1607,7 +1667,10 @@ impl App {
                 self.height = h;
                 self.tv.window = iced::Size::new(w, h);
                 self.tv.place();
-                self.load_visible_art()
+                Task::batch([
+                    self.load_visible_art(),
+                    self.read.resized(&self.client, w, h).map(Message::Read),
+                ])
             }
             // Development only: pretend the first track of the open album is playing,
             // with synced lyrics, so the now-playing card can be screenshotted
@@ -1792,22 +1855,36 @@ impl App {
                 )) => Some(Message::AnyClick),
                 _ => None,
             }),
-            keyboard::on_key_press(|key, modifiers| {
-                if modifiers.command() || modifiers.alt() {
-                    return None;
-                }
-                match key.as_ref() {
-                    Key::Named(Named::Space) => Some(Message::Toggle),
-                    Key::Named(Named::Escape) | Key::Named(Named::Backspace) => Some(Message::Back),
-                    Key::Character("n") => Some(Message::Next),
-                    Key::Character("p") => Some(Message::Prev),
-                    Key::Character("r") => Some(Message::RadioOn(None)),
-                    Key::Character("c") => Some(Message::Crt),
-                    Key::Character("+") | Key::Character("=") => Some(Message::Volume(5)),
-                    Key::Character("-") => Some(Message::Volume(-5)),
-                    _ => None,
-                }
-            }),
+            if self.tab == Tab::Read && self.read.open.is_some() {
+                keyboard::on_key_press(|key, modifiers| {
+                    if modifiers.command() || modifiers.alt() {
+                        return None;
+                    }
+                    match key.as_ref() {
+                        Key::Named(Named::Escape) => Some(Message::Back),
+                        _ => reader::Reader::key(key).map(Message::Read),
+                    }
+                })
+            } else {
+                keyboard::on_key_press(|key, modifiers| {
+                    if modifiers.command() || modifiers.alt() {
+                        return None;
+                    }
+                    match key.as_ref() {
+                        Key::Named(Named::Space) => Some(Message::Toggle),
+                        Key::Named(Named::Escape) | Key::Named(Named::Backspace) => {
+                            Some(Message::Back)
+                        }
+                        Key::Character("n") => Some(Message::Next),
+                        Key::Character("p") => Some(Message::Prev),
+                        Key::Character("r") => Some(Message::RadioOn(None)),
+                        Key::Character("c") => Some(Message::Crt),
+                        Key::Character("+") | Key::Character("=") => Some(Message::Volume(5)),
+                        Key::Character("-") => Some(Message::Volume(-5)),
+                        _ => None,
+                    }
+                })
+            },
         ])
     }
 
@@ -1827,6 +1904,10 @@ impl App {
             Tab::Music => return self.home_view(),
             Tab::Screen => return self.screen_view(),
             Tab::Lyrics => (self.lyrics_view(), None),
+            Tab::Read if self.read.open.is_some() => {
+                return self.read.reader_view().map(Message::Read);
+            }
+            Tab::Read => (self.read.home_view().map(Message::Read), None),
             Tab::Settings => (self.settings_view(), None),
             Tab::Catalogue => {
                 if let View::Album(id) = self.view {
@@ -1870,7 +1951,7 @@ impl App {
             .and_then(|id| self.artists.iter().find(|a| a.id == id))
         {
             Some(a) => format!("Albums by {}", a.name),
-            None => "Search albums, artists, films, shows, years".to_string(),
+            None => "Search albums, films, shows, books, comics, years".to_string(),
         };
         let search = text_input(&placeholder, &self.query)
             .id(text_input::Id::new("search"))
@@ -1897,11 +1978,15 @@ impl App {
 
         let catalogue = self.filtered_albums().len()
             + self.filtered_movies().len()
-            + self.filtered_shows().len();
+            + self.filtered_shows().len()
+            + self.filtered_books(false).len()
+            + self.filtered_books(true).len();
         let tabs = row![
             self.tab_button(Tab::Music, "Music", String::new()),
             Space::with_width(CARD_GAP),
             self.tab_button(Tab::Screen, "Screen", String::new()),
+            Space::with_width(CARD_GAP),
+            self.tab_button(Tab::Read, "Read", String::new()),
             Space::with_width(CARD_GAP),
             self.tab_button(Tab::Catalogue, "Catalogue", catalogue.to_string()),
             Space::with_width(CARD_GAP),
