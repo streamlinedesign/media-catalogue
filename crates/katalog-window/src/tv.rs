@@ -127,6 +127,8 @@ pub struct Tv {
     started: Option<std::time::Instant>,
     /// Why the set is dark, said under it, until something starts.
     pub note: Option<String>,
+    /// Whether the film asked for is paused (by the pause key).
+    pub paused: bool,
     /// Whether the last mpv to end ended on an error (not just the end of
     /// a short file).
     failed: bool,
@@ -182,6 +184,7 @@ impl Default for Tv {
             ipc,
             started: None,
             note: None,
+            paused: false,
             failed: false,
             hold_until: None,
             channel: 0,
@@ -332,6 +335,7 @@ impl Tv {
             .map_err(|e| format!("could not start mpv: {e}"))?;
         self.mpv = Some(child);
         self.started = Some(std::time::Instant::now());
+        self.paused = false;
         self.failed = false;
         self.note = None;
         self.sound = sound;
@@ -402,8 +406,14 @@ impl Tv {
             .is_some_and(|t| std::time::Instant::now() < t)
     }
 
-    pub fn set_pause(&self, on: bool) {
+    pub fn set_pause(&mut self, on: bool) {
+        self.paused = on;
         self.command(serde_json::json!(["set_property", "pause", on]));
+    }
+
+    /// Back or on by this many seconds.
+    pub fn seek(&self, secs: i32) {
+        self.command(serde_json::json!(["seek", secs, "relative"]));
     }
 
     /// Gives mpv the sound card, or takes it back. Taking the audio track
