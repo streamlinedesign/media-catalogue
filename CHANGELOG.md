@@ -4,6 +4,8 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Phone page: the film or episode comes first, then the poster, title and
+  the rest.
 - MKV films and episodes play in Safari on the iPhone: the phone page asks
   for HLS, and katalogd repackages the file with ffmpeg on the fly,
   copying the picture (H.264, HEVC as `hvc1`) and the sound when Safari

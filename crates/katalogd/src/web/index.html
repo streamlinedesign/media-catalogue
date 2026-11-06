@@ -433,8 +433,8 @@ async function film(id) {
   const m = await cached(`/api/movies/${id}`);
   view.replaceChildren(
     el("a", { class: "back", href: "#films" }, "Back to films"),
-    head(img(m.poster_id, 342), m.title, [m.year, m.duration_ms ? minutes(m.duration_ms) : null, (m.genres || []).join(", ") || null].filter(Boolean).join(" · "), true),
     await watchBox("movie", m.id, m.path),
+    head(img(m.poster_id, 342), m.title, [m.year, m.duration_ms ? minutes(m.duration_ms) : null, (m.genres || []).join(", ") || null].filter(Boolean).join(" · "), true),
     ...(m.overview ? [el("p", { class: "overview" }, m.overview)] : []));
 }
 
@@ -454,15 +454,14 @@ async function shows() {
 
 async function show(id, ep) {
   const s = await cached(`/api/shows/${id}`);
-  const parts = [
-    el("a", { class: "back", href: "#shows" }, "Back to shows"),
-    head(img(s.poster_id, 342), s.title, [s.year, s.seasons === 1 ? "1 season" : `${s.seasons} seasons`, `${s.episode_count} episodes`].filter(Boolean).join(" · "), true),
-  ];
+  const parts = [el("a", { class: "back", href: "#shows" }, "Back to shows")];
   const playing = ep ? s.episodes.find(e => e.id === ep) : null;
   if (playing) {
-    parts.push(el("h3", { class: "season" }, `Season ${playing.season}, episode ${playing.episode}${playing.title ? ": " + playing.title : ""}`));
     parts.push(await watchBox("episode", playing.id, playing.path));
-  } else if (s.overview) {
+    parts.push(el("h3", { class: "season" }, `Season ${playing.season}, episode ${playing.episode}${playing.title ? ": " + playing.title : ""}`));
+  }
+  parts.push(head(img(s.poster_id, 342), s.title, [s.year, s.seasons === 1 ? "1 season" : `${s.seasons} seasons`, `${s.episode_count} episodes`].filter(Boolean).join(" · "), true));
+  if (!playing && s.overview) {
     parts.push(el("p", { class: "overview" }, s.overview));
   }
   let season = null, ol = null;
