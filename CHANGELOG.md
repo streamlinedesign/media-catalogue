@@ -4,6 +4,8 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Page turn buttons: a ← and a → at the two ends of the reader's foot,
+  for books, PDFs and comics, wide enough for a finger.
 - Touch turns the page. Taps are now read from the window itself rather
   than by the page, which never saw them; a tap on the right half of a
   comic or PDF goes on, the left half back, and a drag still scrolls.
