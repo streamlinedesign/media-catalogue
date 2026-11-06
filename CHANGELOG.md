@@ -4,6 +4,14 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- The phone page: with `KATALOG_WEB=0.0.0.0:4180` and `KATALOG_WEB_PASSWORD`,
+  katalogd serves a page on the Wi-Fi for music (albums, playlists, a
+  player with lock screen controls), films and shows (in the browser when
+  its codecs allow, else Download or Open in VLC, with subtitles beside
+  the file as WebVTT) and book and comic downloads. It is its own
+  listener, read-only, behind the password, with a cookie that lasts a
+  year. `make dev` runs it on 0.0.0.0:4180 and the API on 127.0.0.1:4181.
+  New: `GET /books/{id}/file`.
 - The earlier Go web catalogue is gone: `*.go`, `web/`, `seed.json` and
   `docs/web-catalogue.md`. `make dev` now runs katalogd from source on
   127.0.0.1:4180, `make test`, `build` and `lint` are Rust only,

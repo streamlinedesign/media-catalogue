@@ -130,8 +130,8 @@ Every station can also be played by anything on the network, as an endless WAV s
 Tuning in joins the station live. The stream is 44.1 kHz, 16 bit, stereo whatever the files
 are (other rates are resampled for the stream only; the sound card still gets the files as
 they are), about 1.4 Mbit/s. Each listener gets its own thread; a station nobody listens to
-costs nothing. To reach it from a phone, start katalogd with `--bind 0.0.0.0:7300` (or
-`KATALOG_BIND`); it has no password, so do that on a home network only.
+costs nothing. For a phone, use the phone page below rather than opening the whole API to
+the network: the API has no password.
 
 The loop guard is always on: a track may play three times in a row, and the fourth start
 (play, prev, a restart) moves on to the next one instead. `katalog now` and the window say so.
@@ -281,6 +281,7 @@ settings are kept in `~/.config/katalog/reader.json`.
     GET  /api/books/home                 what you are reading and the latest highlights
     GET  /api/books/{id}                 with its chapters (EPUB), bookmarks and highlights
     GET  /api/books/{id}/chapters/{n}    an EPUB chapter as paragraphs, headings and pictures
+    GET  /books/{id}/file                the book or comic file itself, as a download
     GET  /books/{id}/res?path=           a picture inside an EPUB
     GET  /books/{id}/page/{n}?w=&dark=1  a page of a PDF or comic, w pixels wide, pages from 0
     GET  /api/books/{id}/page/{n}/words  the words on a PDF page with their boxes (0..1)
@@ -298,7 +299,9 @@ settings are kept in `~/.config/katalog/reader.json`.
 | --- | --- | --- | --- |
 | `--library` | `KATALOG_LIBRARY` | `~/Library` | Root folder; music is read from `<library>/Music` |
 | `--db` | `KATALOG_DB` | `~/.local/share/katalog/katalog.db` | The SQLite file |
-| `--bind` | `KATALOG_BIND` | `127.0.0.1:7300` | HTTP address. `0.0.0.0:7300` makes it reachable from your phone |
+| `--bind` | `KATALOG_BIND` | `127.0.0.1:7300` | HTTP address of the API, no password; keep it on 127.0.0.1 |
+| `--web` | `KATALOG_WEB` | off | The phone page, e.g. `0.0.0.0:4180` for the Wi-Fi |
+| `--web-password` | `KATALOG_WEB_PASSWORD` | | Its password; without one the page stays off |
 | `--socket` | `KATALOG_SOCKET` | `$XDG_RUNTIME_DIR/katalogd.sock` | Unix socket for local views |
 | `--no-network` | | | Never call MusicBrainz or LRCLIB |
 | `--auto-fetch` | | | Look up missing art and lyrics after every scan instead of only on `katalog fetch` |
@@ -308,6 +311,27 @@ settings are kept in `~/.config/katalog/reader.json`.
 | `--opensubtitles-key` | `OPENSUBTITLES_KEY` | | opensubtitles.com key, to fetch missing subtitles |
 | `--sub-langs` | `KATALOG_SUB_LANGS` | `en` | Languages to look for subtitles in, comma separated |
 | `--device` | `KATALOG_DEVICE` | `auto` | ALSA output: `auto`, `default`, `hw:1,0`, `hw:CARD=DAC` (`aplay -l` or `katalog devices`) |
+
+### The phone page
+
+katalogd can serve a page for a phone or another computer on the same Wi-Fi: music to
+play in the browser (albums, playlists, the lock screen controls), films and shows, and
+books and comics to download. Put two lines in `~/.config/katalog/env` and restart:
+
+    KATALOG_WEB=0.0.0.0:4180
+    KATALOG_WEB_PASSWORD=...           # from your password manager
+
+The log names the address to open (`phone page on http://192.168.1.20:4180`). It is a
+listener of its own, apart from the API, and only reads: lists, covers and the files
+themselves, sent as they are with Range requests, so a phone can seek and nothing is
+transcoded. Nothing on it can change the library or touch the sound card. Signing in keeps
+a cookie for a year; a new password signs every phone out.
+
+A film plays in the browser when the browser knows its codecs: H.264 or HEVC with AAC
+mostly does, also inside MKV on Android; DTS, AC-3 or old AVI files do not. Then the page
+says so and offers Download and Open in VLC (the VLC link carries the sign-in in the
+address). Subtitles beside the file (`.srt`, `.vtt`) come along. It is plain HTTP, meant
+for a home network; do not forward the port to the internet.
 
 ### Running it all the time
 

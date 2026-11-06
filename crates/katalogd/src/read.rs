@@ -24,10 +24,10 @@ use axum::Router;
 use katalog_core::books::{self, Block, Book, Bookmark, Chapter, Highlight, NewHighlight, Word};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tower::ServiceExt;
 
 pub fn routes() -> Router<Shared> {
     Router::new()
-        .route("/api/books", get(list))
         .route("/api/books/home", get(home))
         .route("/api/books/{id}", get(one))
         .route("/api/books/{id}/chapters/{n}", get(chapter))
@@ -47,6 +47,59 @@ pub fn routes() -> Router<Shared> {
         )
         .route("/api/books/{id}/highlights.md", get(markdown))
         .route("/api/books/{id}/search", get(search))
+}
+
+/// The book list and the files themselves, for the phone page too.
+pub fn library() -> Router<Shared> {
+    Router::new()
+        .route("/api/books", get(list))
+        .route("/books/{id}/file", get(file))
+}
+
+/// The book or comic file, as a download under its own name.
+async fn file(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Response, Error> {
+    let book = get_book(&s, id)?;
+    let name = std::path::Path::new(&book.path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("book-{id}"));
+    let mut res = tower_http::services::ServeFile::new(&book.path)
+        .oneshot(req)
+        .await
+        .map_err(|e| Error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_response();
+    if let Ok(v) = attachment(&name).parse() {
+        res.headers_mut()
+            .insert(axum::http::header::CONTENT_DISPOSITION, v);
+    }
+    Ok(res)
+}
+
+/// A Content-Disposition value that keeps a non-ASCII file name (RFC 6266).
+pub(crate) fn attachment(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut enc = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            enc.push(b as char);
+        } else {
+            enc.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{enc}")
 }
 
 pub struct Error(StatusCode, String);
