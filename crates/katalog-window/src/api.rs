@@ -126,6 +126,30 @@ pub struct Playlist {
     /// On the radio dial. Older daemons do not say, and had every playlist on it.
     #[serde(default = "on_the_dial")]
     pub station: bool,
+    /// Made by katalogd from this genre; it refills it after each scan.
+    #[serde(default)]
+    pub genre: Option<String>,
+}
+
+impl Playlist {
+    /// "12 tracks · 51 min", with "genre · " in front of a made one.
+    pub fn meta(&self) -> String {
+        format!(
+            "{}{} {} · {}",
+            if self.genre.is_some() {
+                "genre · "
+            } else {
+                ""
+            },
+            self.track_count,
+            if self.track_count == 1 {
+                "track"
+            } else {
+                "tracks"
+            },
+            fmt_long(self.duration_ms)
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

@@ -162,13 +162,25 @@ impl App {
         keys = keys
             .push(Space::with_width(12))
             .push(key("SUB", false, Message::TvCycle("sub")))
-            .push(key("AUDIO", false, Message::TvCycle("audio")))
-            .push(horizontal_space())
-            .push(key(
-                if self.tv.power { "TURN OFF" } else { "TURN ON" },
-                false,
-                Message::TvPower,
-            ));
+            .push(key("AUDIO", false, Message::TvCycle("audio")));
+        // A film or episode you asked for can be wound and paused (also
+        // with the arrow keys and space); the channels run live.
+        if matches!(self.tv.on, On::Asked(_)) {
+            keys = keys
+                .push(Space::with_width(12))
+                .push(key("← 10", false, Message::TvSeek(-10)))
+                .push(key(
+                    if self.tv.paused { "PLAY" } else { "PAUSE" },
+                    self.tv.paused,
+                    Message::TvPauseToggle,
+                ))
+                .push(key("30 →", false, Message::TvSeek(30)));
+        }
+        keys = keys.push(horizontal_space()).push(key(
+            if self.tv.power { "TURN OFF" } else { "TURN ON" },
+            false,
+            Message::TvPower,
+        ));
         column![
             set,
             Space::with_height(10),
