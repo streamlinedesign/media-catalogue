@@ -176,6 +176,13 @@ key, films keep the names from their files.
 A key is free: make an account at themoviedb.org, then Settings, API, and ask for a developer
 key. Either the "API Key" or the "API Read Access Token" works.
 
+Subtitles a film or episode lacks come from opensubtitles.com: put `OPENSUBTITLES_KEY=...`
+(from your password manager) and `KATALOG_SUB_LANGS=en,hr` in `~/.config/katalog/env` and
+restart katalogd. Then Find subtitles on a film's page, or "subs" beside an episode, lists
+what there is, made-for-this-file first, and a pick is saved beside the video as
+`Film.hr.srt`. A key is free: make an account at opensubtitles.com, then API consumers, and
+add one. The account allows a few downloads a day.
+
     katalog movies [query]             # films, by title, year or genre
     katalog shows [query]
     katalog show "twin peaks"          # a show's episodes, season by season
@@ -230,6 +237,8 @@ takes the card back from the set.
 | `--no-lrc-files` | | | Keep fetched lyrics in the database only, do not write `.lrc` files |
 | `--scan-only` | | | Scan once, print the report, exit |
 | `--tmdb-key` | `TMDB_KEY` | | TMDB key for film and TV details and posters |
+| `--opensubtitles-key` | `OPENSUBTITLES_KEY` | | opensubtitles.com key, to fetch missing subtitles |
+| `--sub-langs` | `KATALOG_SUB_LANGS` | `en` | Languages to look for subtitles in, comma separated |
 | `--device` | `KATALOG_DEVICE` | `auto` | ALSA output: `auto`, `default`, `hw:1,0`, `hw:CARD=DAC` (`aplay -l` or `katalog devices`) |
 
 ### Running it all the time
