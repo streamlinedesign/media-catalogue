@@ -119,6 +119,26 @@ pub struct Chapter {
     pub title: String,
 }
 
+/// A place where the searched words are, from katalogd.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hit {
+    pub page: i64,
+    pub block: i64,
+    pub snippet: String,
+    pub at: usize,
+    pub len: usize,
+}
+
+/// A search inside the open book: what was typed, and what came back.
+#[derive(Debug, Default)]
+pub struct Search {
+    pub q: String,
+    /// The words the hits are for; None while nothing was searched.
+    pub done: Option<String>,
+    pub hits: Vec<Hit>,
+    pub busy: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Bookmark {
     pub id: i64,
@@ -363,6 +383,7 @@ pub enum Side {
     None,
     Contents,
     Marks,
+    Search,
 }
 
 /// What is selected and not yet highlighted.
@@ -415,6 +436,7 @@ pub struct Open {
     /// The bar over a comic: shown until you read, back with a click in the middle.
     pub chrome: bool,
     pub flash: Option<String>,
+    pub search: Search,
 }
 
 pub struct Reader {
@@ -476,6 +498,12 @@ pub enum Msg {
     Words(i64, Result<Vec<Word>, String>),
     Go(i64),
     GoTo(i64, i64),
+    SearchInput(String),
+    SearchSubmit,
+    /// Opens Search with these words and looks for them (for screenshots).
+    Find(String),
+    /// The words searched for, and the places found.
+    Searched(String, Result<Vec<Hit>, String>),
     Next,
     Prev,
     GotoInput(String),
@@ -1144,6 +1172,7 @@ impl Reader {
                     saved_at: Instant::now(),
                     chrome: true,
                     flash: None,
+                    search: Search::default(),
                     full,
                 });
                 self.error = None;
@@ -1219,6 +1248,49 @@ impl Reader {
             }
             Msg::Go(p) => self.go(c, p, 0),
             Msg::GoTo(p, b) => self.go(c, p, b),
+            Msg::SearchInput(q) => {
+                if let Some(o) = self.open.as_mut() {
+                    o.search.q = q;
+                }
+                Task::none()
+            }
+            Msg::Find(q) => {
+                if let Some(o) = self.open.as_mut() {
+                    o.side = Side::Search;
+                    o.search.q = q;
+                }
+                self.update(Msg::SearchSubmit, c)
+            }
+            Msg::SearchSubmit => {
+                let Some(o) = self.open.as_mut() else {
+                    return Task::none();
+                };
+                let q = o.search.q.trim().to_string();
+                if q.chars().count() < 2 || o.search.done.as_deref() == Some(q.as_str()) {
+                    return Task::none();
+                }
+                o.search.busy = true;
+                let id = o.full.book.id;
+                let c = c.clone();
+                let path = format!("/api/books/{id}/search?q={}", urlencoding(&q));
+                Task::perform(
+                    async move { c.get::<Vec<Hit>>(&path).await.map_err(|e| e.to_string()) },
+                    move |r| Msg::Searched(q.clone(), r),
+                )
+            }
+            Msg::Searched(q, r) => {
+                if let Some(o) = self.open.as_mut() {
+                    o.search.busy = false;
+                    match r {
+                        Ok(hits) => {
+                            o.search.hits = hits;
+                            o.search.done = Some(q);
+                        }
+                        Err(e) => o.flash = Some(format!("search: {e}")),
+                    }
+                }
+                Task::none()
+            }
             Msg::Next => self.turn_page(c, 1),
             Msg::Prev => self.turn_page(c, -1),
             Msg::GotoInput(s) => {
@@ -1604,6 +1676,9 @@ impl Reader {
             Msg::Side(s) => {
                 if let Some(o) = self.open.as_mut() {
                     o.side = if o.side == s { Side::None } else { s };
+                    if o.side == Side::Search {
+                        return text_input::focus(text_input::Id::new("book-search"));
+                    }
                 }
                 Task::none()
             }
@@ -1750,6 +1825,7 @@ impl Reader {
             Key::Character("r") => Msg::Rotate,
             Key::Character("m") => Msg::Side(Side::Marks),
             Key::Character("t") => Msg::Side(Side::Contents),
+            Key::Character("/") => Msg::Side(Side::Search),
             Key::Character("+") | Key::Character("=") => Msg::Size(1.0),
             Key::Character("-") => Msg::Size(-1.0),
             Key::Character("1") => Msg::Mark("ochre"),
@@ -2413,7 +2489,7 @@ impl Reader {
             ))
             .push(chip(
                 format!("Marks {}", o.full.highlights.len() + o.full.bookmarks.len()),
-                o.side != Side::None,
+                o.side == Side::Marks,
                 Msg::Side(Side::Marks),
             ));
         let bar = container(bar)
@@ -2926,9 +3002,76 @@ impl Reader {
             format!("Marks {}", o.full.highlights.len() + o.full.bookmarks.len()),
             Side::Marks,
         ));
+        if !o.full.book.is_comic() {
+            tabs = tabs.push(tab("Search".into(), Side::Search));
+        }
         let mut col = column![tabs, horizontal_rule(1).style(style::hairline(CREAM))].spacing(12);
 
-        if o.side == Side::Contents && epub {
+        if o.side == Side::Search {
+            col = col.push(
+                text_input("words to find", &o.search.q)
+                    .id(text_input::Id::new("book-search"))
+                    .on_input(Msg::SearchInput)
+                    .on_submit(Msg::SearchSubmit)
+                    .size(14)
+                    .font(MONO)
+                    .padding([8, 10])
+                    .style(style::search),
+            );
+            let s = &o.search;
+            let note = if s.busy {
+                "looking…".to_string()
+            } else {
+                match &s.done {
+                    None => "type, then Enter".into(),
+                    Some(_) if s.hits.is_empty() => "not in this book".into(),
+                    Some(_) if s.hits.len() >= 300 => "300 places, the first ones".into(),
+                    Some(_) if s.hits.len() == 1 => "1 place".into(),
+                    Some(_) => format!("{} places", s.hits.len()),
+                }
+            };
+            col = col.push(mono(note, 12.0, alpha(CREAM, 0.7)));
+            for h in &s.hits {
+                let chars: Vec<char> = h.snippet.chars().collect();
+                let at = h.at.min(chars.len());
+                let end = (h.at + h.len).min(chars.len());
+                let part = |a: usize, b: usize| chars[a..b].iter().collect::<String>();
+                let spans: Vec<iced::widget::text::Span<'a, Msg, iced::Font>> = vec![
+                    iced::widget::span(part(0, at))
+                        .font(SERIF)
+                        .color(alpha(CREAM, 0.85)),
+                    iced::widget::span(part(at, end))
+                        .font(SERIF_BOLD)
+                        .color(CREAM)
+                        .background(alpha(style::OCHRE, 0.45)),
+                    iced::widget::span(part(end, chars.len()))
+                        .font(SERIF)
+                        .color(alpha(CREAM, 0.85)),
+                ];
+                let place = if epub {
+                    o.full
+                        .chapters
+                        .get(h.page as usize)
+                        .map(|c| c.title.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| format!("ch. {}", h.page + 1))
+                } else {
+                    format!("p. {}", h.page + 1)
+                };
+                col = col.push(
+                    button(
+                        column![
+                            rich_text(spans).size(14).line_height(1.4),
+                            mono(place, 11.0, alpha(CREAM, 0.7)),
+                        ]
+                        .spacing(3),
+                    )
+                    .style(style::plain)
+                    .padding([4, 0])
+                    .on_press(Msg::GoTo(h.page, h.block)),
+                );
+            }
+        } else if o.side == Side::Contents && epub {
             for (i, ch) in o.full.chapters.iter().enumerate() {
                 let here = i as i64 == o.page;
                 col = col.push(
@@ -3515,6 +3658,21 @@ mod tests {
             saved_at: Instant::now(),
             chrome: true,
             flash: None,
+            search: Search::default(),
         }
     }
+}
+
+/// Puts words into a query string.
+fn urlencoding(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
