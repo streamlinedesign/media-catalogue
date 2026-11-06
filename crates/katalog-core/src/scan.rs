@@ -28,6 +28,9 @@ pub struct ScanReport {
     /// Films and TV, when they were scanned too.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video: Option<crate::video::VideoReport>,
+    /// Books and comics, when they were scanned too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub books: Option<crate::books::BooksReport>,
 }
 
 pub struct Scanner<'a> {

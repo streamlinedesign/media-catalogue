@@ -2,6 +2,7 @@
 //!
 //! Nothing here plays audio or draws a window. The daemon and the CLI build on this.
 
+pub mod books;
 pub mod channels;
 pub mod db;
 pub mod fetch;

@@ -41,7 +41,7 @@ pub fn start(state: Shared) {
         return;
     }
     info!("watching {}", root.display());
-    for dir in ["Movies", "TV-Shows"] {
+    for dir in ["Movies", "TV-Shows", "Books", "Comics"] {
         let d = state.args.library.join(dir);
         if d.is_dir() {
             match watcher.watch(&d, RecursiveMode::Recursive) {

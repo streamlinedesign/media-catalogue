@@ -4,6 +4,13 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Books and comics in katalogd: it reads `Books/` (EPUB, PDF) and
+  `Comics/` (CBR, CBZ, PDF, folders of pages) next to `Music/`, with
+  titles, authors, series, issue numbers and covers. It serves EPUB
+  chapters as paragraphs, PDF and comic pages as images (dark pages on
+  request), the words on a PDF page with their boxes, and keeps where
+  you are, bookmarks, and highlights with notes. The window's reader
+  comes next.
 - Lyrics can be removed: Remove beside the lyrics takes them away and
   goes back to the search, to pick better ones or leave the song without.
   Removed lyrics stay away: the online lookup skips the song and a rescan

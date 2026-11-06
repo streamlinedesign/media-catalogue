@@ -117,6 +117,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/player/seek", post(player_seek))
         .route("/api/player/volume", post(player_volume))
         .route("/api/player/jump", post(player_jump))
+        .merge(crate::read::routes())
         .layer(cors)
         .with_state(state)
 }

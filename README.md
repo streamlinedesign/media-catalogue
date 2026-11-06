@@ -217,6 +217,43 @@ takes the card back from the set.
     GET  /api/channels                 the three channels: what is on now and next
     GET  /api/channels/{n}/watch       how to join channel n now, with mpv's --start
 
+### Books and comics
+
+katalogd also reads `Books/` and `Comics/` next to `Music/`:
+
+    Books/Mikhail Bulgakov - The Master and Margarita (1967).epub
+    Books/Lem/Solaris.pdf                       the folder is the author
+    Comics/Alan Ford/Alan Ford 012 (1975).cbr   the folder is the series, 012 the issue
+    Comics/Akira/Akira v02.cbz
+    Comics/Maus/Maus 1/001.jpg ...              a folder of pages is an issue too
+
+Books are EPUB and PDF. Comics are CBR, CBZ, PDF, or a folder of images. An EPUB's own title,
+author and cover win over its file name; a PDF's come from `pdfinfo`. PDF pages are drawn by
+`pdftoppm` and their words found by `pdftotext`, all three from poppler-utils (zathura's PDF
+plugin already pulls it in). A CBR needs `bsdtar` (libarchive) or `unrar`; one that is really a
+zip opens without either. Drawn pages are kept in `~/.cache/katalog/pages`.
+
+Where you are in each book, its bookmarks and its highlights with their notes live in the same
+database. A book that moves to another folder keeps them.
+
+Dark pages swap the paper and the type: white paper becomes the near-black page, black type
+becomes the cream, greys fall between. Strongly coloured pixels, a photo or a map, keep their
+colours and only lose some brightness.
+
+    GET  /api/books?kind=book|comic&q=   q also finds words in highlights and notes
+    GET  /api/books/home                 what you are reading and the latest highlights
+    GET  /api/books/{id}                 with its chapters (EPUB), bookmarks and highlights
+    GET  /api/books/{id}/chapters/{n}    an EPUB chapter as paragraphs, headings and pictures
+    GET  /books/{id}/res?path=           a picture inside an EPUB
+    GET  /books/{id}/page/{n}?w=&dark=1  a page of a PDF or comic, w pixels wide, pages from 0
+    GET  /api/books/{id}/page/{n}/words  the words on a PDF page with their boxes (0..1)
+    PUT  /api/books/{id}/position        {"page":n,"block":n,"progress":0.4}
+    POST /api/books/{id}/bookmarks       {"page":n,"block":n,"label":""}, a second time takes it off
+    PUT  /api/bookmarks/{id}             {"label":"..."};  DELETE /api/bookmarks/{id}
+    POST /api/books/{id}/highlights      {"page":n,"anchor":{...},"text":"...","color":"ochre|pink|green","note":""}
+    PUT  /api/highlights/{id}            {"color":"pink"} or {"note":"..."};  DELETE /api/highlights/{id}
+    GET  /api/books/{id}/highlights.md   every highlight and note as Markdown
+
 ### Flags
 
 | Flag | Env | Default | Meaning |
@@ -327,3 +364,5 @@ All answers are JSON except `/art` and `/stream`. CORS is open, so a web view ca
 | `plays` | Every start, with its source (manual, playlist, radio) and whether it got half way |
 | `playlists`, `playlist_tracks` | Your lists, in order |
 | `track_tags` | Reserved for your own words on tracks |
+| `books` | Books and comics, one row per file (or folder of pages) |
+| `reading`, `bookmarks`, `highlights` | Where you are in each book, your bookmarks, your highlights and their notes |
