@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Every genre a file carries is read, not the first alone: a FLAC tagged
+  Alternative Metal, Alternative Rock, Heavy Metal and four more now counts
+  for all seven, so its genre playlists and stations find it. Files whose
+  tags were read the old way are read once more at the next scan, although
+  nothing on disk changed.
+
 - One artist however the files spell it: "TOOL" and "Tool", "Iron maiden"
   and "Iron Maiden" are one row, under the spelling that looks most like a
   name (words that start with a capital and are not all capitals). The

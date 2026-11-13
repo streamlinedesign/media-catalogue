@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.19.3: every genre in a file is read
 - 0.19.2: artists spelt two ways are one
 - 0.19.0: stations apart from playlists, genre stations, radio skips rejoin live
 - 0.18.1: the phone page shows the film above its poster and title
