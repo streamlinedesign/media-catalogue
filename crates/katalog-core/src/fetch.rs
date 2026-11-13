@@ -203,21 +203,35 @@ impl Fetcher {
         struct Group {
             id: String,
         }
-        let q = format!("releasegroup:{} AND artist:{}", quote(album), quote(artist));
-        let url = format!(
-            "https://musicbrainz.org/ws/2/release-group/?fmt=json&limit=3&query={}",
-            urlencoding::encode(&q)
-        );
-        let search: Search = self
-            .http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await
-            .context("musicbrainz json")?;
-        for g in search.groups {
+        // The title as tagged first; if MusicBrainz knows nothing by that name, again
+        // without what rips add to it ("CD", "Disc 2", "[flac]"), which no release has.
+        let mut titles = vec![album.to_string()];
+        let cleaned = clean_album(album);
+        if !cleaned.is_empty() && cleaned != album.trim() {
+            titles.push(cleaned);
+        }
+        let mut groups = vec![];
+        for title in titles {
+            let q = format!("releasegroup:{} AND artist:{}", quote(&title), quote(artist));
+            let url = format!(
+                "https://musicbrainz.org/ws/2/release-group/?fmt=json&limit=3&query={}",
+                urlencoding::encode(&q)
+            );
+            let search: Search = self
+                .http
+                .get(&url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await
+                .context("musicbrainz json")?;
+            if !search.groups.is_empty() {
+                groups = search.groups;
+                break;
+            }
+        }
+        for g in groups {
             let url = format!(
                 "https://coverartarchive.org/release-group/{}/front-500",
                 g.id
@@ -500,6 +514,59 @@ pub fn clean_title(s: &str) -> String {
     }
 }
 
+/// An album title without what a rip adds to it: "At the Edge of Time CD" → "At the
+/// Edge of Time", "Works Volume (Disc 02) [flac]" → "Works Volume". Used for a second
+/// try when the title as tagged finds nothing.
+pub fn clean_album(s: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    // drop anything in brackets that names a disc or a format
+    let mut bracket = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                bracket.clear();
+            }
+            ')' | ']' | '}' if depth > 0 => {
+                depth -= 1;
+                let b = bracket.to_ascii_lowercase();
+                let noise = ["disc", "disk", "cd", "flac", "mp3", "320", "v0", "24bit", "24-bit", "16bit", "web", "vinyl", "lp"]
+                    .iter()
+                    .any(|w| b.split(|c: char| !c.is_ascii_alphanumeric() && c != '-').any(|t| t == *w || t.starts_with(w) && t[w.len()..].chars().all(|d| d.is_ascii_digit())));
+                if !noise {
+                    out.push('(');
+                    out.push_str(&bracket);
+                    out.push(')');
+                }
+            }
+            _ if depth > 0 => bracket.push(c),
+            _ => out.push(c),
+        }
+    }
+    // and a trailing "CD", "CD1", "Disc 2", "Disk 1"
+    let mut words: Vec<&str> = out.split_whitespace().collect();
+    loop {
+        let n = words.len();
+        if n == 0 {
+            break;
+        }
+        let last = words[n - 1].to_ascii_lowercase();
+        let is_num = !last.is_empty() && last.chars().all(|c| c.is_ascii_digit());
+        let tagged = last == "cd" || last.strip_prefix("cd").is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
+        if tagged {
+            words.pop();
+        } else if is_num && n >= 2 && ["disc", "disk", "cd"].contains(&words[n - 2].to_ascii_lowercase().as_str()) {
+            words.truncate(n - 2);
+        } else if last == "-" {
+            words.pop();
+        } else {
+            break;
+        }
+    }
+    words.join(" ")
+}
+
 /// "Artist feat. Someone" → "Artist"; "A & B" and "A, B" are kept.
 pub fn clean_artist(s: &str) -> String {
     let lowered = s.to_ascii_lowercase();
@@ -559,6 +626,17 @@ mod tests {
             clean_title("21st Century Schizoid Man"),
             "21st Century Schizoid Man"
         );
+    }
+
+    #[test]
+    fn album_titles_lose_rip_marks() {
+        assert_eq!(clean_album("At the Edge of Time CD"), "At the Edge of Time");
+        assert_eq!(clean_album("Works Volume (Disc 02) [flac]"), "Works Volume");
+        assert_eq!(clean_album("Fanfare - The Best of Live"), "Fanfare - The Best of Live");
+        assert_eq!(clean_album("The Wall CD1"), "The Wall");
+        assert_eq!(clean_album("Abbey Road Disc 2"), "Abbey Road");
+        assert_eq!(clean_album("Nursery Cryme (2008 Remaster)"), "Nursery Cryme (2008 Remaster)");
+        assert_eq!(clean_album("CD"), "");
     }
 
     #[test]

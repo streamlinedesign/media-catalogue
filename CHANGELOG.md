@@ -22,6 +22,10 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
   is on is refused (409); stop turns the radio off; a station that is
   deleted or left empty turns the radio off with a notice after the
   current song.
+- Cover art: when MusicBrainz knows no album by the title as tagged, the lookup
+  tries again without what rips add to it ("CD", "CD1", "Disc 2", "(Disc 02)",
+  "[flac]"), so "At the Edge of Time CD" finds its cover. `katalog fetch art
+  --retry` looks again for albums that had nothing.
 - Phone page: the film or episode comes first, then the poster, title and
   the rest.
 - MKV films and episodes play in Safari on the iPhone: the phone page asks
