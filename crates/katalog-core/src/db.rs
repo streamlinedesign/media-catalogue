@@ -146,7 +146,97 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN genre TEXT")?;
     }
     crate::stations::migrate(conn)?;
+    merge_artists(conn)?;
     Ok(())
+}
+
+/// How much a spelling looks like a name: the words that start with a
+/// capital and are not all capitals. "Iron Maiden" is 2, "Iron maiden" 1,
+/// "Tool" 1, "TOOL" 0. Ties keep what is there.
+pub fn spelling_score(name: &str) -> usize {
+    name.split_whitespace()
+        .filter(|w| {
+            let letters: Vec<char> = w.chars().filter(|c| c.is_alphabetic()).collect();
+            let first_upper = letters.first().is_some_and(|c| c.is_uppercase());
+            let shouted = letters.len() > 1 && letters.iter().all(|c| c.is_uppercase());
+            first_upper && !shouted
+        })
+        .count()
+}
+
+/// Folds artists whose names differ only in case into one row, keeping the
+/// spelling that looks most like a name. Their albums and tracks follow; an
+/// album that then exists twice (same title, same folder) is folded too.
+/// Cheap when there is nothing to do, so it runs on every start.
+pub fn merge_artists(conn: &Connection) -> Result<usize> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
+    {
+        let mut st = conn.prepare("SELECT id, name FROM artists ORDER BY id")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, name) = row?;
+            groups
+                .entry(name.to_lowercase())
+                .or_default()
+                .push((id, name));
+        }
+    }
+    let mut merged = 0;
+    for group in groups.into_values().filter(|g| g.len() > 1) {
+        let keeper = group
+            .iter()
+            .max_by(|a, b| {
+                spelling_score(&a.1)
+                    .cmp(&spelling_score(&b.1))
+                    .then(b.0.cmp(&a.0))
+            })
+            .map(|(id, _)| *id)
+            .expect("a group has members");
+        for (other, _) in group.iter().filter(|(id, _)| *id != keeper) {
+            let albums: Vec<(i64, String, String)> = conn
+                .prepare("SELECT id, title, dir FROM albums WHERE artist_id = ?1")?
+                .query_map([other], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            for (album, title, dir) in albums {
+                let twin: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM albums WHERE artist_id = ?1 AND title = ?2 AND dir = ?3",
+                        params![keeper, title, dir],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                match twin {
+                    Some(twin) => {
+                        conn.execute(
+                            "UPDATE tracks SET album_id = ?1 WHERE album_id = ?2",
+                            params![twin, album],
+                        )?;
+                        conn.execute(
+                            "UPDATE albums SET art_id = COALESCE(art_id, (SELECT art_id FROM albums WHERE id = ?2)),
+                                               year = COALESCE(year, (SELECT year FROM albums WHERE id = ?2))
+                             WHERE id = ?1",
+                            params![twin, album],
+                        )?;
+                        conn.execute("DELETE FROM albums WHERE id = ?1", [album])?;
+                    }
+                    None => {
+                        conn.execute(
+                            "UPDATE albums SET artist_id = ?1 WHERE id = ?2",
+                            params![keeper, album],
+                        )?;
+                    }
+                }
+            }
+            conn.execute(
+                "UPDATE tracks SET artist_id = ?1 WHERE artist_id = ?2",
+                params![keeper, other],
+            )?;
+            conn.execute("DELETE FROM artists WHERE id = ?1", [other])?;
+            merged += 1;
+        }
+    }
+    Ok(merged)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -860,6 +950,67 @@ pub fn picks(conn: &Connection, album_id: i64) -> Result<Vec<Pick>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn artists_spelt_two_ways_become_one() {
+        assert_eq!(spelling_score("Iron Maiden"), 2);
+        assert_eq!(spelling_score("Iron maiden"), 1);
+        assert_eq!(spelling_score("Tool"), 1);
+        assert_eq!(spelling_score("TOOL"), 0);
+        let path = std::env::temp_dir().join(format!("katalog-merge-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let conn = open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO artists (id, name, sort_name) VALUES (1, 'TOOL', 'tool'), (2, 'Tool', 'tool'), (3, 'Camel', 'camel');
+             INSERT INTO albums (id, artist_id, title, year, dir) VALUES
+               (1, 1, 'Fear Inoculum', 2019, '/m/Tool/Fear Inoculum'),
+               (2, 2, 'Lateralus', 2001, '/m/Tool/Lateralus'),
+               (3, 1, 'Opiate', NULL, '/m/Tool/Opiate'),
+               (4, 2, 'Opiate', 1992, '/m/Tool/Opiate'),
+               (5, 3, 'Mirage', 1974, '/m/Camel/Mirage');
+             INSERT INTO tracks (id, album_id, artist_id, title, path, size, mtime, codec) VALUES
+               (1, 1, 1, 'a', '/1', 0, 0, 'flac'), (2, 2, 2, 'b', '/2', 0, 0, 'flac'),
+               (3, 3, 1, 'c', '/3', 0, 0, 'flac'), (4, 4, 2, 'd', '/4', 0, 0, 'flac'),
+               (5, 5, 3, 'e', '/5', 0, 0, 'flac');",
+        )
+        .unwrap();
+        assert_eq!(merge_artists(&conn).unwrap(), 1);
+        assert_eq!(merge_artists(&conn).unwrap(), 0);
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM artists ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(names, ["Camel", "Tool"]);
+        // Every Tool album and track now hangs off the one row; the Opiate
+        // folder, scanned under both spellings, is one album with its year.
+        let albums: Vec<(String, i64, Option<i64>)> = conn
+            .prepare("SELECT title, artist_id, year FROM albums WHERE artist_id = 2 ORDER BY title")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            albums,
+            [
+                ("Fear Inoculum".to_string(), 2, Some(2019)),
+                ("Lateralus".to_string(), 2, Some(2001)),
+                ("Opiate".to_string(), 2, Some(1992)),
+            ]
+        );
+        let strays: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE artist_id = 1 OR album_id NOT IN (SELECT id FROM albums)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(strays, 0);
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn genre_playlists_follow_the_tags() {
