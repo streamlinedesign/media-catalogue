@@ -211,7 +211,12 @@ impl Fetcher {
             titles.push(cleaned);
         }
         let mut groups = vec![];
-        for title in titles {
+        for (i, title) in titles.into_iter().enumerate() {
+            if i > 0 {
+                // MusicBrainz asks for one request per second; the caller waits between
+                // albums, this waits between the two tries for one album.
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            }
             let q = format!("releasegroup:{} AND artist:{}", quote(&title), quote(artist));
             let url = format!(
                 "https://musicbrainz.org/ws/2/release-group/?fmt=json&limit=3&query={}",
