@@ -13,6 +13,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// How the tags are read. Bump it when a scan should read every file again
+/// although nothing on disk changed, because the reading got better.
+/// 2: every genre a file carries, not the first alone.
+const TAGS_READ: &str = "2";
 use std::time::{Instant, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
@@ -76,6 +81,10 @@ impl<'a> Scanner<'a> {
         let started = Instant::now();
         let mut report = ScanReport::default();
         let mut seen_paths: HashSet<String> = HashSet::new();
+        // Tags read the old way are read again once, whole library or not;
+        // the note is made when the whole library has been through.
+        let reread = db::get_meta(self.conn, "tags_read")?.as_deref() != Some(TAGS_READ);
+        let whole = dirs.len() == 1 && dirs[0] == self.root;
 
         for dir in dirs {
             if !dir.exists() {
@@ -93,7 +102,7 @@ impl<'a> Scanner<'a> {
                 report.seen += 1;
                 let key = path.to_string_lossy().into_owned();
                 seen_paths.insert(key.clone());
-                match self.scan_file(path) {
+                match self.scan_file(path, reread) {
                     Ok(Outcome::Unchanged) => {}
                     Ok(Outcome::Added) => report.added += 1,
                     Ok(Outcome::Updated) => report.updated += 1,
@@ -110,6 +119,9 @@ impl<'a> Scanner<'a> {
         }
         self.remove_empty_albums()?;
         self.attach_folder_art(dirs)?;
+        if reread && whole {
+            db::set_meta(self.conn, "tags_read", TAGS_READ)?;
+        }
         if report.added + report.updated + report.removed > 0
             || db::get_meta(self.conn, "genre_playlists")?.is_none()
         {
@@ -187,7 +199,9 @@ impl<'a> Scanner<'a> {
         Ok(())
     }
 
-    fn scan_file(&mut self, path: &Path) -> Result<Outcome> {
+    /// One file. Unchanged files (same size and mtime) are left alone
+    /// unless `reread` asks for their tags again.
+    fn scan_file(&mut self, path: &Path, reread: bool) -> Result<Outcome> {
         let meta = std::fs::metadata(path)?;
         let size = meta.len() as i64;
         let mtime = meta
@@ -206,7 +220,7 @@ impl<'a> Scanner<'a> {
             )
             .optional()?;
         if let Some((_, s, m)) = existing {
-            if s == size && m == mtime {
+            if s == size && m == mtime && !reread {
                 return Ok(Outcome::Unchanged);
             }
         }
@@ -397,7 +411,18 @@ fn read_tags(path: &Path) -> Result<FileTags> {
         .and_then(|t| t.track())
         .map(i64::from)
         .or_else(|| number_from_stem(&stem));
-    let genre = get(ItemKey::Genre);
+    // A file may carry several genres (seven GENRE fields in a FLAC, or one
+    // ID3 frame with NUL between them): keep them all, "; " between.
+    let genre = tag
+        .map(|t| {
+            t.get_strings(ItemKey::Genre)
+                .flat_map(|g| g.split('\0'))
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|g| !g.is_empty());
     let lyrics = get(ItemKey::Lyrics);
 
     let picture = tag.and_then(|t| {
@@ -478,6 +503,82 @@ fn folder_art(dir: &Path) -> Option<(String, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A second of silence as a WAV, which lofty can tag.
+    pub(crate) fn silent_wav(path: &Path) {
+        let data = vec![0u8; 16_000];
+        let mut f = Vec::new();
+        f.extend_from_slice(b"RIFF");
+        f.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        f.extend_from_slice(b"WAVEfmt ");
+        f.extend_from_slice(&16u32.to_le_bytes());
+        f.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        f.extend_from_slice(&1u16.to_le_bytes()); // mono
+        f.extend_from_slice(&8000u32.to_le_bytes());
+        f.extend_from_slice(&16_000u32.to_le_bytes());
+        f.extend_from_slice(&2u16.to_le_bytes());
+        f.extend_from_slice(&16u16.to_le_bytes());
+        f.extend_from_slice(b"data");
+        f.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        f.extend_from_slice(&data);
+        std::fs::write(path, f).unwrap();
+    }
+
+    #[test]
+    fn every_genre_in_a_file_is_read() {
+        use lofty::config::WriteOptions;
+        use lofty::tag::{ItemValue, Tag, TagItem, TagType};
+        let dir = std::env::temp_dir().join(format!("katalog-genres-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("one.wav");
+        silent_wav(&path);
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert_text(ItemKey::TrackArtist, "Azra".into());
+        tag.push(TagItem::new(ItemKey::Genre, ItemValue::Text("Rock".into())));
+        tag.push(TagItem::new(
+            ItemKey::Genre,
+            ItemValue::Text("New Wave".into()),
+        ));
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+        let t = read_tags(&path).unwrap();
+        assert_eq!(t.artist, "Azra");
+        assert_eq!(t.genre.as_deref(), Some("Rock; New Wave"));
+        assert_eq!(
+            db::split_genres(t.genre.as_deref().unwrap()),
+            ["Rock", "New Wave"]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_better_reading_of_the_tags_reads_every_file_again() {
+        use lofty::config::WriteOptions;
+        use lofty::tag::{Tag, TagType};
+        let dir = std::env::temp_dir().join(format!("katalog-reread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Music/Azra/Album")).unwrap();
+        let path = dir.join("Music/Azra/Album/01.wav");
+        silent_wav(&path);
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert_text(ItemKey::TrackArtist, "Azra".into());
+        tag.insert_text(ItemKey::AlbumTitle, "Album".into());
+        tag.insert_text(ItemKey::Genre, "Rock".into());
+        tag.save_to_path(&path, WriteOptions::default()).unwrap();
+        let mut conn = db::open(&dir.join("k.db")).unwrap();
+        let root = dir.join("Music");
+        let r = Scanner::new(&mut conn, root.clone()).scan_all().unwrap();
+        assert_eq!((r.added, r.updated), (1, 0));
+        // Nothing changed on disk: the file is skipped.
+        let r = Scanner::new(&mut conn, root.clone()).scan_all().unwrap();
+        assert_eq!((r.added, r.updated), (0, 0));
+        // A database from before this reading of the tags: read once more.
+        db::set_meta(&conn, "tags_read", "1").unwrap();
+        let r = Scanner::new(&mut conn, root.clone()).scan_all().unwrap();
+        assert_eq!((r.added, r.updated), (0, 1));
+        let r = Scanner::new(&mut conn, root).scan_all().unwrap();
+        assert_eq!((r.added, r.updated), (0, 0));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn one_artist_however_the_files_spell_it() {
