@@ -25,8 +25,11 @@
 //!   katalog playlist-remove <name> <n>
 //!   katalog playlist-rename <name> <new name>
 //!   katalog playlist-delete <name>
+//!   katalog playlist-station <name> on|off  make the playlist a station, or delete its station
 //!   katalog stations                        every station, what is on it now, its stream
-//!   katalog radio [playlist]                tune in to a playlist's station, or everything
+//!   katalog station-new <name> --playlist <p> | --genre <g>
+//!   katalog station-delete <name or id>
+//!   katalog radio [station]                 tune in to a station by name or id, or Everything
 //!   katalog radio --off
 //!
 //! Add --json to any command for the raw answer.
@@ -210,20 +213,34 @@ enum Cmd {
     PlaylistDelete {
         name: String,
     },
-    /// Put a playlist on the radio dial, or take it off
+    /// Make a playlist a station, or delete its station
     PlaylistStation {
         name: String,
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
-    /// Every station (each playlist, and the whole library) and what is on it now
+    /// Every station on the dial and what is on it now
     Stations,
-    /// Tune in to a station: a playlist, or the whole library, joined live,
-    /// part way into whatever song it is playing
-    Radio {
-        /// A playlist by name or id; none means everything
+    /// Make a station that plays a playlist or a genre
+    StationNew {
+        name: String,
+        /// A playlist by name or id
+        #[arg(long, conflicts_with = "genre", required_unless_present = "genre")]
         playlist: Option<String>,
-        /// Turn the radio off (what is playing goes on, the queue stops growing)
+        /// A genre as the tags spell it, like "new wave"
+        #[arg(long)]
+        genre: Option<String>,
+    },
+    /// Take a station off the dial (its playlist stays)
+    StationDelete {
+        name: String,
+    },
+    /// Tune in to a station, joined live, part way into whatever song it is
+    /// playing
+    Radio {
+        /// A station by name or id; none means Everything
+        station: Option<String>,
+        /// Turn the radio off (the song stops with it)
         #[arg(long)]
         off: bool,
     },
@@ -470,20 +487,38 @@ async fn run() -> Result<()> {
             delete(&http, format!("{base}/api/playlists/{}", p["id"])).await?
         }
         Cmd::Stations => get("/api/stations".into()).await?,
-        Cmd::Radio { playlist, off } => {
+        Cmd::StationNew {
+            name,
+            playlist,
+            genre,
+        } => {
+            let body = match (playlist, genre) {
+                (Some(p), _) => {
+                    let p = find_playlist(&http, base, p).await?;
+                    serde_json::json!({ "name": name, "kind": "playlist", "playlist": p["id"] })
+                }
+                (None, Some(g)) => {
+                    serde_json::json!({ "name": name, "kind": "genre", "genre": g })
+                }
+                (None, None) => anyhow::bail!("give --playlist or --genre"),
+            };
+            post_json(&http, format!("{base}/api/stations"), body).await?
+        }
+        Cmd::StationDelete { name } => {
+            let st = find_station(&get, name).await?;
+            delete(&http, format!("{base}/api/stations/{}", st["id"])).await?
+        }
+        Cmd::Radio { station, off } => {
             if *off {
                 delete(&http, format!("{base}/api/radio")).await?
             } else {
-                let playlist = match playlist {
-                    Some(p) => Some(find_playlist(&http, base, p).await?["id"].clone()),
-                    None => None,
+                let body = match station {
+                    Some(name) => {
+                        serde_json::json!({ "station": find_station(&get, name).await?["id"] })
+                    }
+                    None => serde_json::json!({}),
                 };
-                post_json(
-                    &http,
-                    format!("{base}/api/radio"),
-                    serde_json::json!({ "playlist": playlist }),
-                )
-                .await?
+                post_json(&http, format!("{base}/api/radio"), body).await?
             }
         }
         Cmd::Now => get("/api/player".into()).await?,
@@ -622,6 +657,8 @@ async fn run() -> Result<()> {
         | Cmd::Radio { .. }
         | Cmd::Clear => print_now(&value, None),
         Cmd::Stations => print_stations(&value, base),
+        Cmd::StationNew { .. } => print_stations(&serde_json::json!([value]), base),
+        Cmd::StationDelete { name } => println!("{name} is off the dial"),
         Cmd::Playlists => print_rows(
             &value,
             &["id", "name", "track_count", "duration_ms", "station"],
@@ -629,9 +666,9 @@ async fn run() -> Result<()> {
         Cmd::PlaylistStation { .. } => println!(
             "{}",
             if value["station"].as_bool().unwrap_or(true) {
-                "on the dial"
+                "a station on the dial"
             } else {
-                "off the dial"
+                "no station"
             }
         ),
         Cmd::Playlist { .. } | Cmd::PlaylistAdd { .. } | Cmd::PlaylistRemove { .. } => {
@@ -988,13 +1025,56 @@ async fn post(http: &reqwest::Client, url: String) -> Result<Value> {
     check(res).await
 }
 
+/// A station by id or name from `/api/stations`; "everything" is the first
+/// library station, and a playlist's name finds the station that plays it.
+async fn find_station<F, Fut>(get: &F, name: &str) -> Result<Value>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let all = get("/api/stations".into()).await?;
+    let all = all.as_array().cloned().unwrap_or_default();
+    let name = name.trim();
+    let by_id = name.parse::<i64>().ok();
+    let found = all
+        .iter()
+        .find(|st| by_id.is_some() && st["id"].as_i64() == by_id)
+        .or_else(|| {
+            all.iter()
+                .find(|st| s(&st["name"]).eq_ignore_ascii_case(name))
+        })
+        .or_else(|| {
+            let lib =
+                name.eq_ignore_ascii_case("everything") || name.eq_ignore_ascii_case("library");
+            all.iter().find(|st| lib && st["kind"] == "library")
+        });
+    if let Some(st) = found {
+        return Ok(st.clone());
+    }
+    // An older habit: the playlist's name.
+    if let Ok(p) = get("/api/playlists".into()).await {
+        let p = p.as_array().and_then(|a| {
+            a.iter()
+                .find(|p| s(&p["name"]).eq_ignore_ascii_case(name))
+                .cloned()
+        });
+        if let Some(p) = p {
+            let st = all.iter().find(|st| {
+                st["playlist"] == p["id"] || (!p["genre"].is_null() && st["genre"] == p["genre"])
+            });
+            if let Some(st) = st {
+                return Ok(st.clone());
+            }
+        }
+    }
+    let names: Vec<String> = all.iter().map(|st| s(&st["name"])).collect();
+    anyhow::bail!("no station called {name} (there are: {})", names.join(", "))
+}
+
 fn print_stations(v: &Value, base: &str) {
     let Some(list) = v.as_array() else { return };
     for st in list {
-        let slug = match st["playlist"].as_i64() {
-            Some(id) => id.to_string(),
-            None => "everything".into(),
-        };
+        let slug = st["id"].as_i64().unwrap_or(0);
         let now = &st["now"];
         let on = if now.is_null() {
             "nothing to play".to_string()
@@ -1007,8 +1087,15 @@ fn print_stations(v: &Value, base: &str) {
                 fmt_ms(now["duration_ms"].as_i64().unwrap_or(0)),
             )
         };
-        println!("{:<20} {on}", s(&st["name"]));
-        println!("{:<20} {base}/stations/{slug}.wav", "");
+        let kind = match (s(&st["kind"]).as_str(), &st["genre"]) {
+            ("genre", Value::String(g)) => format!("genre: {g}"),
+            (k, _) => k.to_string(),
+        };
+        println!("{:>4}  {:<20} {:<16} {on}", slug, s(&st["name"]), kind);
+        println!(
+            "{:>4}  {:<20} {:<16} {base}/stations/{slug}.wav",
+            "", "", ""
+        );
     }
 }
 

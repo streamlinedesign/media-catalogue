@@ -11,7 +11,8 @@
 use crate::player::decode::Decoder;
 use crate::Shared;
 use bytes::Bytes;
-use katalog_core::{db, stations};
+use katalog_core::db;
+use katalog_core::stations::{self, Station};
 use rubato::{FftFixedIn, Resampler};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -23,33 +24,22 @@ const CHANNELS: usize = 2;
 /// How far ahead of real time the stream may run, so players buffer a little.
 const LEAD: Duration = Duration::from_secs(2);
 
-/// The station a URL names: "everything" (or "library"), a playlist id, or a
-/// playlist name, without the `.wav`.
-pub fn resolve(
-    conn: &rusqlite::Connection,
-    name: &str,
-) -> anyhow::Result<Option<(Option<i64>, String)>> {
+/// The station a URL names, without the `.wav`: a station id or name, and
+/// for older links "everything" (or "library") and a playlist id or name.
+pub fn resolve(conn: &rusqlite::Connection, name: &str) -> anyhow::Result<Option<Station>> {
     let name = name.strip_suffix(".wav").unwrap_or(name);
-    if name.eq_ignore_ascii_case("everything") || name.eq_ignore_ascii_case("library") {
-        return Ok(Some((None, "Everything".into())));
-    }
-    for p in db::playlists(conn)? {
-        if p.id.to_string() == name || p.name.eq_ignore_ascii_case(name) {
-            return Ok(Some((Some(p.id), p.name)));
-        }
-    }
-    Ok(None)
+    stations::resolve(conn, name)
 }
 
 /// Starts a listener's thread; the receiver yields the WAV bytes.
-pub fn listen(state: Shared, playlist: Option<i64>, name: String) -> mpsc::Receiver<Bytes> {
+pub fn listen(state: Shared, station: i64, name: String) -> mpsc::Receiver<Bytes> {
     let (tx, rx) = mpsc::channel(8);
     std::thread::Builder::new()
         .name(format!("on air: {name}"))
         .spawn(move || {
             info!("listener tuned in to {name}");
             if tx.blocking_send(Bytes::from(wav_header())).is_ok() {
-                if let Err(e) = run(&state, playlist, &tx) {
+                if let Err(e) = run(&state, station, &tx) {
                     warn!("{name}: {e:#}");
                 }
             }
@@ -59,8 +49,7 @@ pub fn listen(state: Shared, playlist: Option<i64>, name: String) -> mpsc::Recei
     rx
 }
 
-fn run(state: &Shared, playlist: Option<i64>, tx: &mpsc::Sender<Bytes>) -> anyhow::Result<()> {
-    let key = playlist.unwrap_or(0);
+fn run(state: &Shared, station: i64, tx: &mpsc::Sender<Bytes>) -> anyhow::Result<()> {
     let started = Instant::now();
     let mut sent: u64 = 0;
     let mut at = stations::now_ms();
@@ -68,8 +57,12 @@ fn run(state: &Shared, playlist: Option<i64>, tx: &mpsc::Sender<Bytes>) -> anyho
     loop {
         let (slot, path) = {
             let conn = state.db.lock();
-            let entries = stations::entries(&conn, playlist)?;
-            let Some(slot) = stations::slot_at(&entries, key, at) else {
+            // Read again every song: a station taken off the dial ends its streams.
+            let Some(st) = stations::get(&conn, station)? else {
+                anyhow::bail!("off the dial");
+            };
+            let entries = stations::entries(&conn, &st)?;
+            let Some(slot) = stations::slot_at(&entries, st.seed, at) else {
                 anyhow::bail!("nothing to play");
             };
             let track = db::track(&conn, slot.track_id)?;

@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS playlists (
   id         INTEGER PRIMARY KEY,
   name       TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  station    INTEGER NOT NULL DEFAULT 1, -- 0: kept off the radio dial
+  station    INTEGER NOT NULL DEFAULT 1, -- unused since 0.19: the stations table says
   genre      TEXT                        -- made by Katalog from this genre
 );
 CREATE TABLE IF NOT EXISTS playlist_tracks (
@@ -145,6 +145,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has("playlists", "genre")? {
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN genre TEXT")?;
     }
+    crate::stations::migrate(conn)?;
     Ok(())
 }
 
@@ -466,7 +467,8 @@ pub struct Playlist {
     pub track_count: i64,
     pub duration_ms: i64,
     pub created_at: String,
-    /// On the radio dial as a station.
+    /// Has a station of its own on the radio dial (for a genre playlist, a
+    /// station of its genre).
     pub station: bool,
     /// Made by Katalog from this genre, and kept up to date after each scan.
     pub genre: Option<String>,
@@ -476,7 +478,10 @@ const PLAYLIST_SQL: &str = r#"
 SELECT p.id, p.name,
        (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id),
        (SELECT COALESCE(SUM(t.duration_ms), 0) FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id WHERE pt.playlist_id = p.id),
-       p.created_at, p.station, p.genre
+       p.created_at,
+       EXISTS (SELECT 1 FROM stations s WHERE s.playlist_id = p.id
+               OR (s.kind = 'genre' AND s.genre = p.genre)),
+       p.genre
 FROM playlists p
 "#;
 
@@ -505,7 +510,8 @@ pub fn split_genres(tag: &str) -> Vec<String> {
 
 /// Makes a playlist for every genre with enough tracks, refills the ones
 /// there are, and drops those whose genre has gone. Hand-made playlists are
-/// not touched. New ones start off the radio dial. Returns how many there are.
+/// not touched. Genre stations do not hang on these, so dropping one leaves
+/// the radio alone. Returns how many there are.
 pub fn sync_genre_playlists(conn: &Connection) -> Result<usize> {
     use std::collections::HashMap;
     // Genre (lower case) -> (spellings seen and how often, track ids in order).
@@ -622,13 +628,10 @@ pub fn create_playlist(conn: &Connection, name: &str) -> Result<Playlist> {
     Ok(playlist(conn, id)?.expect("just inserted"))
 }
 
-/// Puts a playlist on the radio dial or takes it off.
+/// Puts a playlist on the radio dial or takes it off: makes or deletes its
+/// station. What the playlist page's switch and older clients use.
 pub fn set_playlist_station(conn: &Connection, id: i64, station: bool) -> Result<()> {
-    conn.execute(
-        "UPDATE playlists SET station = ?1 WHERE id = ?2",
-        params![station as i64, id],
-    )?;
-    Ok(())
+    crate::stations::set_for_playlist(conn, id, station)
 }
 
 pub fn rename_playlist(conn: &Connection, id: i64, name: &str) -> Result<()> {
@@ -641,6 +644,14 @@ pub fn rename_playlist(conn: &Connection, id: i64, name: &str) -> Result<()> {
             anyhow::bail!("there is already a playlist called {name}");
         }
     }
+    // A station still named after the playlist follows the new name, when
+    // no other station has it.
+    conn.execute(
+        "UPDATE stations SET name = ?1
+         WHERE playlist_id = ?2 AND name = (SELECT name FROM playlists WHERE id = ?2)
+           AND NOT EXISTS (SELECT 1 FROM stations WHERE name = ?1 COLLATE NOCASE)",
+        params![name, id],
+    )?;
     conn.execute(
         "UPDATE playlists SET name = ?1 WHERE id = ?2",
         params![name, id],
@@ -650,6 +661,8 @@ pub fn rename_playlist(conn: &Connection, id: i64, name: &str) -> Result<()> {
 
 pub fn delete_playlist(conn: &Connection, id: i64) -> Result<bool> {
     conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
+    // Its station goes too (the foreign key does it as well, when it is on).
+    conn.execute("DELETE FROM stations WHERE playlist_id = ?1", [id])?;
     Ok(conn.execute("DELETE FROM playlists WHERE id = ?1", [id])? > 0)
 }
 
@@ -971,8 +984,11 @@ mod tests {
         assert!(playlist(&conn, 1).unwrap().unwrap().station);
         set_playlist_station(&conn, 1, false).unwrap();
         assert!(!playlist(&conn, 1).unwrap().unwrap().station);
+        // Playlists and stations are separate now: a new playlist is not on
+        // the dial until it is made a station.
         let new = create_playlist(&conn, "Workout").unwrap();
-        assert!(new.station);
+        assert!(!new.station);
+        set_playlist_station(&conn, new.id, true).unwrap();
         let on: Vec<String> = playlists(&conn)
             .unwrap()
             .into_iter()

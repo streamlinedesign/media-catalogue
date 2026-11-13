@@ -4,6 +4,24 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- Stations are their own thing, apart from playlists: a `stations` table
+  holds Everything, playlist stations and genre stations. A genre station
+  picks tracks by their genre tags, so a rescan that drops the genre
+  playlist leaves the station on the dial. On first start every playlist
+  that was on the dial becomes a station with its old seed, so what is on
+  air does not change. New playlists are no longer stations by themselves;
+  the playlist page has Make a station / Remove station.
+  New: `POST /api/stations` {name, kind, playlist?, genre?},
+  `PUT /api/stations/{id}` {name}, `DELETE /api/stations/{id}`;
+  `GET /api/stations` adds `id`, `kind`, `genre`; `POST /api/radio` takes
+  `{"station": id}` (`{"playlist": id}` and `{}` still work);
+  `/stations/{name or id}.wav`. CLI: `katalog station-new`,
+  `station-delete`, `radio <station>`.
+- Radio fixes: next, previous and jump rejoin the station live instead of
+  starting the next song from 0:00; adding to the queue while the radio
+  is on is refused (409); stop turns the radio off; a station that is
+  deleted or left empty turns the radio off with a notice after the
+  current song.
 - Phone page: the film or episode comes first, then the poster, title and
   the rest.
 - MKV films and episodes play in Safari on the iPhone: the phone page asks

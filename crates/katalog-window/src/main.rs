@@ -231,7 +231,7 @@ enum Message {
     PlaylistChanged(Result<PlaylistWithTracks, String>),
     RemoveFromPlaylist(i64, usize),
     DeletePlaylist(i64),
-    /// Put a playlist on the radio dial, or take it off.
+    /// Make a playlist a station, or delete its station.
     SetStation(i64, bool),
     StationSet(Result<serde_json::Value, String>),
     PlaylistDeleted(Result<serde_json::Value, String>),
@@ -965,7 +965,8 @@ impl App {
                 if self.open_playlist.as_ref().map(|p| p.playlist.id) != Some(id) {
                     self.open_playlist = None;
                 }
-                self.load_playlist(id)
+                // The Radio chip needs the station list.
+                Task::batch([self.load_playlist(id), self.load_on_air()])
             }
             Message::NewPlaylistName(n) => {
                 self.new_playlist = n;
@@ -1101,7 +1102,7 @@ impl App {
                     Message::StationSet,
                 )
             }
-            Message::StationSet(Ok(_)) => self.load_playlists(),
+            Message::StationSet(Ok(_)) => Task::batch([self.load_playlists(), self.load_on_air()]),
             Message::StationSet(Err(e)) => {
                 self.error = Some(e);
                 Task::none()
@@ -1119,9 +1120,12 @@ impl App {
                 "/api/player/queue",
                 Some(serde_json::json!({ "playlist": id })),
             ),
-            Message::RadioOn(playlist) => self.player_post(
+            Message::RadioOn(station) => self.player_post(
                 "/api/radio",
-                Some(serde_json::json!({ "playlist": playlist })),
+                Some(match station {
+                    Some(id) => serde_json::json!({ "station": id }),
+                    None => serde_json::json!({}),
+                }),
             ),
             Message::RadioOff => {
                 let c = self.client.clone();
@@ -1151,7 +1155,7 @@ impl App {
                     let at = self
                         .stations()
                         .iter()
-                        .position(|s| s.playlist == r.playlist);
+                        .position(|s| s.id.is_some() && s.id == r.station);
                     if let Some(i) = at {
                         self.tuned = i;
                     }
@@ -2014,8 +2018,8 @@ impl App {
                 let n = stations.len() as i32;
                 self.tuned = (self.tuned as i32 + by).rem_euclid(n) as usize;
                 if self.player.radio.is_some() {
-                    let pl = stations[self.tuned].playlist;
-                    return Task::batch([Task::done(Message::RadioOn(pl)), self.load_on_air()]);
+                    let id = stations[self.tuned].id;
+                    return Task::batch([Task::done(Message::RadioOn(id)), self.load_on_air()]);
                 }
                 self.load_on_air()
             }
@@ -2023,8 +2027,8 @@ impl App {
                 if self.player.radio.is_some() {
                     Task::done(Message::RadioOff)
                 } else {
-                    let pl = self.stations().get(self.tuned).and_then(|s| s.playlist);
-                    Task::done(Message::RadioOn(pl))
+                    let id = self.stations().get(self.tuned).and_then(|s| s.id);
+                    Task::done(Message::RadioOn(id))
                 }
             }
             Message::Crt => {
@@ -2682,21 +2686,31 @@ impl App {
             chip("Add to queue", Message::AddPlaylist(p.id)),
             Space::with_width(8),
         ];
-        actions = actions.push(if on_air {
-            chip("Radio off", Message::RadioOff)
-        } else {
-            chip("Radio", Message::RadioOn(Some(p.id)))
-        });
-        // The live dial reads the list, so show the list's flag, not the open copy's.
+        // The station that plays this playlist, from the dial's own list.
         let station = self
+            .on_air
+            .iter()
+            .find(|a| a.playlist == Some(p.id) || (p.genre.is_some() && a.genre == p.genre))
+            .and_then(|a| a.id);
+        if on_air {
+            actions = actions
+                .push(chip("Radio off", Message::RadioOff))
+                .push(Space::with_width(8));
+        } else if station.is_some() {
+            actions = actions
+                .push(chip("Radio", Message::RadioOn(station)))
+                .push(Space::with_width(8));
+        }
+        // The list's flag rather than the open copy's: it is the fresher.
+        let has_station = self
             .playlists
             .iter()
             .find(|x| x.id == p.id)
             .map_or(p.station, |x| x.station);
-        actions = actions.push(Space::with_width(8)).push(if station {
-            chip("On the dial", Message::SetStation(p.id, false))
+        actions = actions.push(if has_station {
+            chip("Remove station", Message::SetStation(p.id, false))
         } else {
-            chip("Off the dial", Message::SetStation(p.id, true))
+            chip("Make a station", Message::SetStation(p.id, true))
         });
         actions = actions
             .push(horizontal_space())

@@ -32,14 +32,19 @@
 //!   GET  /api/playlists               name, track count, length
 //!   POST /api/playlists               {"name": "chill"}
 //!   GET  /api/playlists/{id}          with its tracks in order
-//!   PUT  /api/playlists/{id}          {"name": "..."} rename
+//!   PUT  /api/playlists/{id}          {"name": "..."} rename; {"station": bool} makes or deletes its station
 //!   DELETE /api/playlists/{id}
 //!   POST /api/playlists/{id}/tracks   {"tracks":[ids]} or {"album":id} or {"artist":id}, appended
 //!   DELETE /api/playlists/{id}/tracks/{position}
 //!   GET  /api/tracks/{id}/playlists   ids of the playlists it is in
 //!   "playlist": id works in /api/player/play and /api/player/queue too.
 //!
-//!   POST /api/radio                   {"playlist": id} or {} for the whole library
+//!   GET  /api/stations                every station in dial order, with what is on now and next
+//!   POST /api/stations                {"name": "...", "kind": "library|playlist|genre", "playlist": id, "genre": "rock"}
+//!   PUT  /api/stations/{id}           {"name": "..."} rename
+//!   DELETE /api/stations/{id}
+//!   GET  /stations/{name}[.wav]       a station as an endless WAV, by name or id
+//!   POST /api/radio                   {"station": id}, {} for Everything; {"playlist": id} still works
 //!   DELETE /api/radio                 off
 
 use crate::player::{Cmd, Radio, Source, Status as PlayerStatus};
@@ -50,7 +55,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
-use katalog_core::{db, video};
+use katalog_core::{db, stations, video};
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use tower_http::cors::{Any, CorsLayer};
@@ -96,7 +101,11 @@ pub fn router(state: Shared) -> Router {
             delete(playlist_remove),
         )
         .route("/api/radio", post(radio_on).delete(radio_off))
-        .route("/api/stations", get(stations))
+        .route("/api/stations", get(stations).post(create_station))
+        .route(
+            "/api/stations/{id}",
+            axum::routing::put(rename_station).delete(delete_station),
+        )
         .route("/stations/{name}", get(station_stream))
         .route("/api/scan", post(scan))
         .route("/api/fetch", post(fetch))
@@ -803,21 +812,73 @@ async fn player_status(State(s): State<Shared>) -> Json<PlayerStatus> {
     Json(s.player.status())
 }
 
-/// Every station, the library first, with what is on now and next.
-async fn stations(State(s): State<Shared>) -> ApiResult<Vec<katalog_core::stations::OnAir>> {
-    let now = katalog_core::stations::now_ms();
-    Ok(Json(katalog_core::stations::on_air(&s.db.lock(), now)?))
+/// Every station in dial order, with what is on now and next.
+async fn stations(State(s): State<Shared>) -> ApiResult<Vec<stations::OnAir>> {
+    Ok(Json(stations::on_air(&s.db.lock(), stations::now_ms())?))
+}
+
+async fn create_station(
+    State(s): State<Shared>,
+    Json(body): Json<stations::NewStation>,
+) -> ApiResult<stations::OnAir> {
+    let conn = s.db.lock();
+    if let Some(p) = body.playlist {
+        db::playlist(&conn, p)?.ok_or_else(|| not_found("playlist"))?;
+    }
+    let made = stations::create(&conn, &body)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(stations::on_air_one(
+        &conn,
+        &made,
+        stations::now_ms(),
+    )?))
+}
+
+#[derive(Deserialize)]
+struct StationEdit {
+    name: Option<String>,
+}
+
+async fn rename_station(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+    Json(body): Json<StationEdit>,
+) -> ApiResult<stations::OnAir> {
+    let station = {
+        let conn = s.db.lock();
+        stations::get(&conn, id)?.ok_or_else(|| not_found("station"))?;
+        if let Some(name) = &body.name {
+            stations::rename(&conn, id, name)
+                .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        }
+        let st = stations::get(&conn, id)?.ok_or_else(|| not_found("station"))?;
+        stations::on_air_one(&conn, &st, stations::now_ms())?
+    };
+    s.player.send(Cmd::StationsChanged)?;
+    Ok(Json(station))
+}
+
+async fn delete_station(
+    State(s): State<Shared>,
+    Path(id): Path<i64>,
+) -> ApiResult<serde_json::Value> {
+    if !stations::delete(&s.db.lock(), id)? {
+        return Err(not_found("station"));
+    }
+    s.player.send(Cmd::StationsChanged)?;
+    Ok(Json(serde_json::json!({ "deleted": id })))
 }
 
 /// A station as an endless WAV, from the moment of tuning in:
-/// `/stations/chill.wav`, `/stations/everything.wav`, or a playlist id.
+/// `/stations/chill.wav`, `/stations/everything.wav`, or a station id.
 async fn station_stream(
     State(s): State<Shared>,
     Path(name): Path<String>,
 ) -> Result<Response, ApiError> {
     let found = crate::onair::resolve(&s.db.lock(), &name)?;
-    let (playlist, name) = found.ok_or_else(|| not_found("station"))?;
-    let rx = crate::onair::listen(s.clone(), playlist, name.clone());
+    let station = found.ok_or_else(|| not_found("station"))?;
+    let name = station.name;
+    let rx = crate::onair::listen(s.clone(), station.id, name.clone());
     let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv()
             .await
@@ -914,6 +975,13 @@ async fn player_add(
     body: Option<Json<Selection>>,
 ) -> ApiResult<PlayerStatus> {
     let sel = body.map(|b| b.0).unwrap_or_default();
+    // The radio's queue is the station's schedule; songs cannot go in it.
+    if let Some(r) = s.player.status().radio {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("the radio is on ({}): turn it off to queue songs", r.name),
+        ));
+    }
     let tracks = resolve(&s.db.lock(), &sel)?;
     s.player.send(Cmd::Add { tracks })?;
     Ok(Json(settled(&s).await))
@@ -1036,28 +1104,31 @@ async fn playlist(State(s): State<Shared>, Path(id): Path<i64>) -> ApiResult<Pla
 #[derive(Deserialize)]
 struct PlaylistEdit {
     name: Option<String>,
-    /// False takes the playlist off the radio dial.
+    /// True makes the playlist a station, false deletes its station.
     station: Option<bool>,
 }
 
-/// Renames a playlist and/or puts it on or off the dial.
+/// Renames a playlist and/or makes or deletes its station.
 async fn rename_playlist(
     State(s): State<Shared>,
     Path(id): Path<i64>,
     Json(body): Json<PlaylistEdit>,
 ) -> ApiResult<db::Playlist> {
-    let conn = s.db.lock();
-    db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
-    if let Some(name) = &body.name {
-        db::rename_playlist(&conn, id, name)
-            .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    }
-    if let Some(on) = body.station {
-        db::set_playlist_station(&conn, id, on)?;
-    }
-    Ok(Json(
-        db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?,
-    ))
+    let playlist = {
+        let conn = s.db.lock();
+        db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
+        if let Some(name) = &body.name {
+            db::rename_playlist(&conn, id, name)
+                .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        }
+        if let Some(on) = body.station {
+            db::set_playlist_station(&conn, id, on)
+                .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        }
+        db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?
+    };
+    s.player.send(Cmd::StationsChanged)?;
+    Ok(Json(playlist))
 }
 
 async fn delete_playlist(
@@ -1067,6 +1138,8 @@ async fn delete_playlist(
     if !db::delete_playlist(&s.db.lock(), id)? {
         return Err(not_found("playlist"));
     }
+    // Its station went with it.
+    s.player.send(Cmd::StationsChanged)?;
     Ok(Json(serde_json::json!({ "deleted": id })))
 }
 
@@ -1096,6 +1169,10 @@ async fn playlist_remove(
     }
     let playlist = db::playlist(&conn, id)?.ok_or_else(|| not_found("playlist"))?;
     let tracks = db::playlist_tracks(&conn, id)?;
+    // The last song out leaves its station with nothing to play.
+    if tracks.is_empty() {
+        s.player.send(Cmd::StationsChanged)?;
+    }
     Ok(Json(PlaylistWithTracks { playlist, tracks }))
 }
 
@@ -1107,6 +1184,8 @@ async fn track_playlists(State(s): State<Shared>, Path(id): Path<i64>) -> ApiRes
 
 #[derive(Deserialize, Default)]
 struct RadioBody {
+    station: Option<i64>,
+    /// Older clients: the station that plays this playlist.
     playlist: Option<i64>,
 }
 
@@ -1115,22 +1194,29 @@ async fn radio_on(
     body: Option<Json<RadioBody>>,
 ) -> ApiResult<PlayerStatus> {
     let body = body.map(|b| b.0).unwrap_or_default();
-    let name = match body.playlist {
-        Some(id) => {
-            let p = db::playlist(&s.db.lock(), id)?.ok_or_else(|| not_found("playlist"))?;
-            if p.track_count == 0 {
-                return Err(ApiError(
-                    StatusCode::BAD_REQUEST,
-                    format!("the playlist {} is empty", p.name),
-                ));
+    let station = {
+        let conn = s.db.lock();
+        let found = match (body.station, body.playlist) {
+            (Some(id), _) => stations::get(&conn, id)?,
+            (None, Some(p)) => {
+                db::playlist(&conn, p)?.ok_or_else(|| not_found("playlist"))?;
+                stations::of_playlist(&conn, p)?
             }
-            p.name
+            (None, None) => stations::library(&conn)?,
+        };
+        let st = found.ok_or_else(|| not_found("station"))?;
+        if stations::entries(&conn, &st)?.is_empty() {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                format!("{} has nothing to play", st.name),
+            ));
         }
-        None => "Everything".to_string(),
+        st
     };
     s.player.send(Cmd::Radio(Radio {
-        playlist: body.playlist,
-        name,
+        station: station.id,
+        name: station.name,
+        playlist: station.playlist,
     }))?;
     Ok(Json(settled(&s).await))
 }
