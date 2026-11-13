@@ -5,9 +5,11 @@
 //! when the format changes the sink is drained and reopened. Every start and
 //! finish goes into the `plays` table.
 //!
-//! The radio keeps the queue one track ahead, picked at random from a
-//! playlist or the whole library, resting anything heard in the last days.
-//! The loop guard lets a track play three times in a row, then moves on.
+//! The radio plays a station's schedule (see `katalog_core::stations`): it
+//! joins the station where the clock says it is, part way into a song, and
+//! keeps the queue one slot ahead. Skipping, going back or pausing joins the
+//! station live again rather than drifting from it. The loop guard lets a
+//! track play three times in a row, then moves on.
 
 pub mod decode;
 pub mod levels;
@@ -64,9 +66,12 @@ pub struct Status {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Radio {
-    /// None: the whole library.
-    pub playlist: Option<i64>,
+    /// The station's id.
+    pub station: i64,
     pub name: String,
+    /// The station's playlist, for a playlist station. Older views look
+    /// for this one.
+    pub playlist: Option<i64>,
 }
 
 /// Where a start came from, for the `plays` table.
@@ -102,8 +107,12 @@ pub enum Cmd {
     },
     /// Turn the radio on: clear the queue and start picking.
     Radio(Radio),
-    /// Turn the radio off; what is playing goes on, the queue stops growing.
+    /// Turn the radio off; the station's song stops with it.
     RadioOff,
+    /// The stations changed (one deleted, renamed or emptied): if the tuned
+    /// one is gone or has nothing left to play, the radio turns off after
+    /// the song that is playing.
+    StationsChanged,
     /// Append to the queue; start playing if stopped.
     Add {
         tracks: Vec<i64>,
@@ -340,6 +349,9 @@ impl Engine {
                     self.close_sink();
                 }
             }
+            Cmd::Add { .. } if self.radio.is_some() => {
+                anyhow::bail!("the radio is on: turn it off to queue songs");
+            }
             Cmd::Add { tracks } => {
                 let was_empty = self.queue.is_empty();
                 self.queue.extend(tracks);
@@ -353,6 +365,8 @@ impl Engine {
                     self.start_index(next)?;
                 }
             }
+            // The radio's queue is its schedule: any skip joins it live.
+            Cmd::Jump(_) | Cmd::Next | Cmd::Prev if self.radio.is_some() => self.tune_in()?,
             Cmd::Jump(i) => {
                 if i >= self.queue.len() {
                     anyhow::bail!("no track {i} in the queue");
@@ -365,7 +379,10 @@ impl Engine {
                 if i >= self.queue.len() {
                     anyhow::bail!("no track {i} in the queue");
                 }
-                if self.index == Some(i) {
+                if self.index == Some(i) && self.radio.is_some() {
+                    self.queue.remove(i);
+                    self.tune_in()?;
+                } else if self.index == Some(i) {
                     self.finish_current(false);
                     self.queue.remove(i);
                     if i < self.queue.len() {
@@ -384,6 +401,7 @@ impl Engine {
                 }
             }
             Cmd::Clear => {
+                self.radio = None;
                 self.finish_current(false);
                 self.queue.clear();
                 self.index = None;
@@ -405,9 +423,29 @@ impl Engine {
                 }
             }
             Cmd::Stop => {
+                // Stopped is not on air: a stopped radio would only drift.
+                if self.radio.take().is_some() {
+                    info!("radio off");
+                    self.source = Source::Manual;
+                }
                 self.finish_current(false);
                 self.close_sink();
                 self.paused = false;
+            }
+            Cmd::StationsChanged => {
+                if let Some(r) = self.radio.clone() {
+                    match stations::get(&self.conn, r.station)? {
+                        None => self.off_air(&format!("{} is off the dial", r.name)),
+                        Some(st) => {
+                            if let Some(radio) = self.radio.as_mut() {
+                                radio.name = st.name.clone();
+                            }
+                            if stations::entries(&self.conn, &st)?.is_empty() {
+                                self.off_air(&format!("{} has nothing to play", r.name));
+                            }
+                        }
+                    }
+                }
             }
             Cmd::Next => self.advance(1)?,
             Cmd::Prev => {
@@ -524,17 +562,66 @@ impl Engine {
         Ok(())
     }
 
+    /// Radio: the tuned station's schedule key and tracks. None, with the
+    /// radio turned off and a notice, when the station is gone or empty.
+    fn schedule(&mut self) -> Option<(i64, Vec<stations::Entry>)> {
+        let radio = self.radio.clone()?;
+        let station = match stations::get(&self.conn, radio.station) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                self.off_air(&format!("{} is off the dial", radio.name));
+                return None;
+            }
+            Err(e) => {
+                warn!("radio: {e:#}");
+                return None;
+            }
+        };
+        match stations::entries(&self.conn, &station) {
+            Ok(e) if !e.is_empty() => Some((station.seed, e)),
+            Ok(_) => {
+                self.off_air(&format!("{} has nothing to play", radio.name));
+                None
+            }
+            Err(e) => {
+                warn!("radio: {e:#}");
+                None
+            }
+        }
+    }
+
+    /// Radio: turn it off without cutting the song that is playing; nothing
+    /// more is queued after it.
+    fn off_air(&mut self, why: &str) {
+        if self.radio.take().is_none() {
+            return;
+        }
+        info!("radio off: {why}");
+        self.notice = Some(format!("{why}; the radio is off"));
+        self.source = Source::Manual;
+        match self.index {
+            Some(i) => self.queue.truncate(i + 1),
+            None => self.queue.clear(),
+        }
+    }
+
     /// Radio: join the station where it is now, part way into a song.
     fn tune_in(&mut self) -> Result<()> {
-        let Some(radio) = self.radio.clone() else {
+        if self.radio.is_none() {
+            return Ok(());
+        }
+        let Some((key, entries)) = self.schedule() else {
+            // Gone or empty: nothing of it is left playing.
+            self.finish_current(false);
+            self.queue.clear();
+            self.index = None;
+            self.paused = false;
+            self.close_sink();
             return Ok(());
         };
-        let entries = stations::entries(&self.conn, radio.playlist)?;
         let now = stations::now_ms();
-        let Some(slot) = stations::slot_at(&entries, radio.playlist.unwrap_or(0), now) else {
-            self.radio = None;
-            self.close_sink();
-            anyhow::bail!("{} has nothing to play", radio.name);
+        let Some(slot) = stations::slot_at(&entries, key, now) else {
+            return Ok(());
         };
         self.finish_current(false);
         self.queue = vec![slot.track_id];
@@ -553,15 +640,8 @@ impl Engine {
 
     /// Radio: the slot after the last one queued, and move past it.
     fn next_slot(&mut self) -> Option<i64> {
-        let radio = self.radio.as_ref()?;
-        let entries = match stations::entries(&self.conn, radio.playlist) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("radio: {e:#}");
-                return None;
-            }
-        };
-        let slot = stations::slot_at(&entries, radio.playlist.unwrap_or(0), self.on_air_until)?;
+        let (key, entries) = self.schedule()?;
+        let slot = stations::slot_at(&entries, key, self.on_air_until)?;
         self.on_air_until = slot.end_ms();
         Some(slot.track_id)
     }

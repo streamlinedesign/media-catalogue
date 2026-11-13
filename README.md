@@ -58,7 +58,7 @@ searches.
 Music is a dashboard in another register: green on black in IBM Plex Mono,
 the cover, a spectrum that follows the sound, the keys, what comes next, four
 albums picked for the one playing (same genre, same artist, a wildcard, same century), five
-lines of lyrics, and a receiver: each playlist is a station on the dial, and power and tuning
+lines of lyrics, and a receiver with katalogd's stations on the dial, and power and tuning
 drive the radio.
 It holds no library state of its own: everything comes from katalogd, so it can run on another
 machine than the music. Space plays and pauses, `n` and `p` skip, `-` and `+` set the volume, `r` puts the radio on, `c` turns the CRT look (scanlines and a vignette over the whole window; `KATALOG_CRT=0` starts without it) off and on, Esc and
@@ -105,26 +105,32 @@ has played.
     katalog playlists                  # playlist-rename, playlist-delete do what they say
     katalog play --playlist chill      # or add --playlist chill
     katalog stations                   # every station and what is on it right now
-    katalog radio chill                # tune in to that playlist's station
-    katalog radio                      # the whole library's station
+    katalog radio chill                # tune in to a station by name or id
+    katalog radio                      # Everything, the whole library's station
     katalog radio --off
-    katalog playlist-station todo off  # keep a playlist off the radio dial; `on` puts it back
+    katalog station-new Wave --genre "new wave"   # or --playlist chill
+    katalog station-delete Wave        # the playlist, if any, stays
+    katalog playlist-station chill on  # make a playlist a station; `off` deletes its station
 
-Every playlist is a station, and so is the whole library. A station is always on, like a real
+Stations are kept apart from playlists. There are three kinds: Everything (the whole
+library), a playlist's station, and a genre's station, which picks every track whose genre
+tag names that genre, so it stays when a rescan drops the genre playlist. A station is always on, like a real
 one, but nothing runs in the background: it is a schedule. Its songs are shuffled into an
 order that changes every time round, the same artist kept apart where the playlist allows,
 and laid end to end from a fixed start, so what is on at any moment is a sum. Tuning in joins
 the song that is playing, part way through; pausing and coming back joins it live again.
-Adding to or removing from a playlist changes its schedule from then on. The radio stays on
-until you say `--off`, press Play on something else, or switch the window's receiver off.
+Adding to or removing from a playlist changes its schedule from then on; renaming a station
+does not. Next, previous and jump join the station live again rather than drifting from it,
+and songs cannot be queued while the radio is on. The radio stays on until you say `--off`,
+stop, press Play on something else, or switch the window's receiver off; a station deleted
+or left empty turns it off after the song that is playing.
 
-A playlist you do not want on the radio can be taken off the dial: `katalog playlist-station
-<name> off`, or the "On the dial" chip on its page in the window. It then leaves the receiver
-and `katalog stations`, but you can still play it, and still tune in to it by name.
+A new playlist is not a station until you make it one: `katalog playlist-station <name> on`,
+or the "Make a station" chip on its page in the window.
 
 Every station can also be played by anything on the network, as an endless WAV stream:
 
-    mpv http://127.0.0.1:7300/stations/chill.wav        # a playlist by name or id
+    mpv http://127.0.0.1:7300/stations/chill.wav        # a station by name or id
     mpv http://127.0.0.1:7300/stations/everything.wav   # the whole library
 
 Tuning in joins the station live. The stream is 44.1 kHz, 16 bit, stereo whatever the files
@@ -407,13 +413,15 @@ the flake's `lib.userService` instead.
     GET  /api/playlists                name, track count, length
     POST /api/playlists                {"name": "chill"}
     GET  /api/playlists/{id}           with its tracks in order
-    PUT  /api/playlists/{id}           {"name": "...", "station": false} rename, or take off the dial;  DELETE /api/playlists/{id}
+    PUT  /api/playlists/{id}           {"name": "...", "station": true|false} rename, make or delete its station;  DELETE /api/playlists/{id}
     POST /api/playlists/{id}/tracks    {"tracks":[..]} or {"album":id} or {"artist":id}, appended, no duplicates
     DELETE /api/playlists/{id}/tracks/{position}
     GET  /api/tracks/{id}/playlists    ids of the playlists a track is in
-    GET  /api/stations                 every station, the library first: what is on now and next
-    GET  /stations/{name}.wav          a station as an endless live WAV (name, playlist id, or everything)
-    POST /api/radio                    {"playlist": id} or {} for everything, joined live;  DELETE /api/radio turns it off
+    GET  /api/stations                 every station in dial order: id, kind, playlist, genre, name, tracks, now, next
+    POST /api/stations                 {"name": "...", "kind": "library|playlist|genre", "playlist": id, "genre": "new wave"}
+    PUT  /api/stations/{id}            {"name": "..."};  DELETE /api/stations/{id}
+    GET  /stations/{name}.wav          a station as an endless live WAV (station name or id; everything, a playlist name)
+    POST /api/radio                    {"station": id} or {} for Everything, joined live ({"playlist": id} still works);  DELETE /api/radio turns it off
 
 All answers are JSON except `/art` and `/stream`. CORS is open, so a web view can talk to it directly.
 

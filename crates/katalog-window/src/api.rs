@@ -30,7 +30,13 @@ pub struct Pick {
 /// A station and what is on it now.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct OnAir {
+    /// The station's id. Daemons before 0.19 do not send one.
+    #[serde(default)]
+    pub id: Option<i64>,
     pub playlist: Option<i64>,
+    /// For a genre station, its genre in lower case.
+    #[serde(default)]
+    pub genre: Option<String>,
     pub name: String,
     pub tracks: usize,
     pub now: Option<OnAirTrack>,
@@ -113,6 +119,8 @@ pub struct Player {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Radio {
+    #[serde(default)]
+    pub station: Option<i64>,
     pub playlist: Option<i64>,
     pub name: String,
 }
@@ -123,7 +131,8 @@ pub struct Playlist {
     pub name: String,
     pub track_count: i64,
     pub duration_ms: i64,
-    /// On the radio dial. Older daemons do not say, and had every playlist on it.
+    /// Has a station on the radio dial. Older daemons do not say, and had
+    /// every playlist on it.
     #[serde(default = "on_the_dial")]
     pub station: bool,
     /// Made by katalogd from this genre; it refills it after each scan.

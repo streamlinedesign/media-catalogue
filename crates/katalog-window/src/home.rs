@@ -1,7 +1,7 @@
 //! Music: the dashboard. Green phosphor on a black screen, IBM Plex Mono, after
 //! the Spectra-69 "Minimal" board: the cover and what is playing, a plain
 //! spectrum with the transport under it, what comes next, the lyrics, and a
-//! receiver whose stations are the playlists.
+//! receiver whose stations are katalogd's (`/api/stations`).
 
 use crate::api::{fmt_ms, PlayState};
 use crate::{icons, style, App, Message, Tab};
@@ -26,7 +26,9 @@ pub enum Side {
 
 /// One position on the receiver's dial.
 pub struct Station {
-    pub playlist: Option<i64>,
+    /// The station's id; None for the Everything stand-in before the list
+    /// has come (or from a daemon without station ids).
+    pub id: Option<i64>,
     pub name: String,
     pub tracks: i64,
     pub mhz: f32,
@@ -56,25 +58,27 @@ pub(crate) fn rule<'a>() -> Element<'a, Message> {
 }
 
 impl App {
-    /// The playlists as stations, with "Everything" first, spread over the dial.
+    /// katalogd's stations in dial order, spread over the dial. Until the
+    /// list has come, Everything alone.
     pub(crate) fn stations(&self) -> Vec<Station> {
-        let mut out = vec![Station {
-            playlist: None,
-            name: "Everything".into(),
-            tracks: self.status.tracks,
-            mhz: 0.0,
-        }];
-        out.extend(
-            self.playlists
-                .iter()
-                .filter(|p| p.station)
-                .map(|p| Station {
-                    playlist: Some(p.id),
-                    name: p.name.clone(),
-                    tracks: p.track_count,
-                    mhz: 0.0,
-                }),
-        );
+        let mut out: Vec<Station> = self
+            .on_air
+            .iter()
+            .map(|a| Station {
+                id: a.id,
+                name: a.name.clone(),
+                tracks: a.tracks as i64,
+                mhz: 0.0,
+            })
+            .collect();
+        if out.is_empty() {
+            out.push(Station {
+                id: None,
+                name: "Everything".into(),
+                tracks: self.status.tracks,
+                mhz: 0.0,
+            });
+        }
         let n = out.len() as f32;
         let span = DIAL_HI - DIAL_LO - 1.0;
         for (i, s) in out.iter_mut().enumerate() {
@@ -320,7 +324,7 @@ impl App {
         .on_press(if radio_on {
             Message::RadioOff
         } else {
-            Message::RadioOn(self.stations().get(self.tuned).and_then(|s| s.playlist))
+            Message::RadioOn(self.stations().get(self.tuned).and_then(|s| s.id))
         });
 
         let vol = (p.volume * 10.0).round() as usize;
@@ -604,7 +608,7 @@ impl App {
         .into()
     }
 
-    /// The receiver: the playlists on a dial, a power key, tuning and volume.
+    /// The receiver: the stations on a dial, a power key, tuning and volume.
     fn home_receiver(&self) -> Element<'_, Message> {
         let stations = self.stations();
         let tuned = self.tuned.min(stations.len() - 1);
@@ -632,7 +636,7 @@ impl App {
         let on_now = match self
             .on_air
             .iter()
-            .find(|a| a.playlist == st.playlist)
+            .find(|a| a.id == st.id)
             .and_then(|a| a.now.as_ref())
         {
             Some(p) => format!("on air · {} · {}", p.artist, p.title),

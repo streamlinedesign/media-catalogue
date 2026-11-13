@@ -13,7 +13,8 @@
 - Window polish: numbers on one baseline, a right-click menu on tracks and
   albums
 - Reorder a playlist by dragging; `katalog playlist-move`
-- Stations from tags once `track_tags` is in use
+- Stations from your own tags once `track_tags` is in use (genre stations are done)
+- Window: reorder and rename stations on the dial
 
 - CRT: screen curvature and a little bloom, as a shader when the GPU renderer is in use
 
@@ -23,6 +24,7 @@
 
 ## Done
 
+- 0.19.0: stations apart from playlists, genre stations, radio skips rejoin live
 - 0.18.1: the phone page shows the film above its poster and title
 - 0.18.0: MKV in Safari on the iPhone, subtitles from inside the file
 - 0.17.1: Open in VLC from the phone page on Android and iOS, Copy link
