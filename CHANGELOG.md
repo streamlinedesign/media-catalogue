@@ -4,6 +4,12 @@ All notable changes, newest first. `make release` turns Unreleased into a versio
 
 ## [Unreleased]
 
+- One artist however the files spell it: "TOOL" and "Tool", "Iron maiden"
+  and "Iron Maiden" are one row, under the spelling that looks most like a
+  name (words that start with a capital and are not all capitals). The
+  scan folds them from now on, and on start a database that already has
+  the doubles merges them, albums and tracks included.
+
 - Stations are their own thing, apart from playlists: a `stations` table
   holds Everything, playlist stations and genre stations. A genre station
   picks tracks by their genre tags, so a rescan that drops the genre

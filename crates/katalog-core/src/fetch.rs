@@ -217,7 +217,11 @@ impl Fetcher {
                 // albums, this waits between the two tries for one album.
                 tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
             }
-            let q = format!("releasegroup:{} AND artist:{}", quote(&title), quote(artist));
+            let q = format!(
+                "releasegroup:{} AND artist:{}",
+                quote(&title),
+                quote(artist)
+            );
             let url = format!(
                 "https://musicbrainz.org/ws/2/release-group/?fmt=json&limit=3&query={}",
                 urlencoding::encode(&q)
@@ -536,9 +540,19 @@ pub fn clean_album(s: &str) -> String {
             ')' | ']' | '}' if depth > 0 => {
                 depth -= 1;
                 let b = bracket.to_ascii_lowercase();
-                let noise = ["disc", "disk", "cd", "flac", "mp3", "320", "v0", "24bit", "24-bit", "16bit", "web", "vinyl", "lp"]
-                    .iter()
-                    .any(|w| b.split(|c: char| !c.is_ascii_alphanumeric() && c != '-').any(|t| t == *w || t.starts_with(w) && t[w.len()..].chars().all(|d| d.is_ascii_digit())));
+                let noise = [
+                    "disc", "disk", "cd", "flac", "mp3", "320", "v0", "24bit", "24-bit", "16bit",
+                    "web", "vinyl", "lp",
+                ]
+                .iter()
+                .any(|w| {
+                    b.split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                        .any(|t| {
+                            t == *w
+                                || t.starts_with(w)
+                                    && t[w.len()..].chars().all(|d| d.is_ascii_digit())
+                        })
+                });
                 if !noise {
                     out.push('(');
                     out.push_str(&bracket);
@@ -558,10 +572,16 @@ pub fn clean_album(s: &str) -> String {
         }
         let last = words[n - 1].to_ascii_lowercase();
         let is_num = !last.is_empty() && last.chars().all(|c| c.is_ascii_digit());
-        let tagged = last == "cd" || last.strip_prefix("cd").is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
+        let tagged = last == "cd"
+            || last
+                .strip_prefix("cd")
+                .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
         if tagged {
             words.pop();
-        } else if is_num && n >= 2 && ["disc", "disk", "cd"].contains(&words[n - 2].to_ascii_lowercase().as_str()) {
+        } else if is_num
+            && n >= 2
+            && ["disc", "disk", "cd"].contains(&words[n - 2].to_ascii_lowercase().as_str())
+        {
             words.truncate(n - 2);
         } else if last == "-" {
             words.pop();
@@ -637,10 +657,16 @@ mod tests {
     fn album_titles_lose_rip_marks() {
         assert_eq!(clean_album("At the Edge of Time CD"), "At the Edge of Time");
         assert_eq!(clean_album("Works Volume (Disc 02) [flac]"), "Works Volume");
-        assert_eq!(clean_album("Fanfare - The Best of Live"), "Fanfare - The Best of Live");
+        assert_eq!(
+            clean_album("Fanfare - The Best of Live"),
+            "Fanfare - The Best of Live"
+        );
         assert_eq!(clean_album("The Wall CD1"), "The Wall");
         assert_eq!(clean_album("Abbey Road Disc 2"), "Abbey Road");
-        assert_eq!(clean_album("Nursery Cryme (2008 Remaster)"), "Nursery Cryme (2008 Remaster)");
+        assert_eq!(
+            clean_album("Nursery Cryme (2008 Remaster)"),
+            "Nursery Cryme (2008 Remaster)"
+        );
         assert_eq!(clean_album("CD"), "");
     }
 

@@ -24,6 +24,7 @@
 
 ## Done
 
+- 0.19.2: artists spelt two ways are one
 - 0.19.0: stations apart from playlists, genre stations, radio skips rejoin live
 - 0.18.1: the phone page shows the film above its poster and title
 - 0.18.0: MKV in Safari on the iPhone, subtitles from inside the file

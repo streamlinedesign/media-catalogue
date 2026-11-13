@@ -216,7 +216,7 @@ impl<'a> Scanner<'a> {
 
         let tx = self.conn.transaction()?;
         let album_artist_id = upsert_artist(&tx, &tags.album_artist)?;
-        let artist_id = if tags.artist == tags.album_artist {
+        let artist_id = if tags.artist.to_lowercase() == tags.album_artist.to_lowercase() {
             album_artist_id
         } else {
             upsert_artist(&tx, &tags.artist)?
@@ -305,16 +305,31 @@ enum Outcome {
     Updated,
 }
 
+/// The artist row for a name. "TOOL" and "Tool" are one artist: the row is
+/// found without regard to case, and keeps whichever spelling looks more
+/// like a name (`db::spelling_score`).
 fn upsert_artist(conn: &Connection, name: &str) -> Result<i64> {
+    let found: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, name FROM artists WHERE name = ?1 COLLATE NOCASE ORDER BY id LIMIT 1",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((id, have)) = found {
+        if have != name && db::spelling_score(name) > db::spelling_score(&have) {
+            conn.execute(
+                "UPDATE artists SET name = ?1, sort_name = ?2 WHERE id = ?3",
+                params![name, sort_name(name), id],
+            )?;
+        }
+        return Ok(id);
+    }
     conn.execute(
-        "INSERT OR IGNORE INTO artists (name, sort_name) VALUES (?1, ?2)",
+        "INSERT INTO artists (name, sort_name) VALUES (?1, ?2)",
         params![name, sort_name(name)],
     )?;
-    Ok(
-        conn.query_row("SELECT id FROM artists WHERE name = ?1", [name], |r| {
-            r.get(0)
-        })?,
-    )
+    Ok(conn.last_insert_rowid())
 }
 
 fn upsert_album(
@@ -458,4 +473,36 @@ fn folder_art(dir: &Path) -> Option<(String, Vec<u8>)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_artist_however_the_files_spell_it() {
+        let path = std::env::temp_dir().join(format!("katalog-artist-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let conn = db::open(&path).unwrap();
+        let a = upsert_artist(&conn, "TOOL").unwrap();
+        assert_eq!(upsert_artist(&conn, "Tool").unwrap(), a);
+        assert_eq!(upsert_artist(&conn, "tool").unwrap(), a);
+        let name: String = conn
+            .query_row("SELECT name FROM artists WHERE id = ?1", [a], |r| r.get(0))
+            .unwrap();
+        // The spelling that looks like a name wins, and stays.
+        assert_eq!(name, "Tool");
+        let b = upsert_artist(&conn, "Iron maiden").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(upsert_artist(&conn, "Iron Maiden").unwrap(), b);
+        let name: String = conn
+            .query_row("SELECT name FROM artists WHERE id = ?1", [b], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Iron Maiden");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artists", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        std::fs::remove_file(&path).unwrap();
+    }
 }
